@@ -52,6 +52,7 @@
     if (connLabel) connLabel.textContent = label;
     if (footEl) footEl.textContent = foot;
   }
+  let pollN = 0;
   function onPoll(res) {
     if (!CONFIG.isLive()) return;
     if (res === null) {
@@ -62,10 +63,16 @@
       Sim.applyLive(res);
       const age = (res.ageSec != null) ? ' • อัปเดต ' + res.ageSec + ' วิที่แล้ว' : '';
       setConn('live', 'สด · EA ออนไลน์', 'LIVE — EA ออนไลน์' + age + ' • magic ' + CONFIG.magic);
+      // refresh real "lessons" from closed trades every ~6th poll (cheaper than every tick)
+      if (pollN++ % 6 === 0)
+        Bridge.getTrades().then(r => { if (r && r.trades) Sim.applyLiveTrades(r.trades); });
     }
   }
 
-  if (CONFIG.isLive()) setConn('waiting', 'กำลังเชื่อม…', '● กำลังเชื่อมต่อ bridge…');
+  if (CONFIG.isLive()) {
+    Sim.enterLive();           // wipe demo seed before live data lands
+    setConn('waiting', 'กำลังเชื่อม…', '● กำลังเชื่อมต่อ bridge…');
+  }
   Bridge.start(onPoll);
 
   let last = performance.now();

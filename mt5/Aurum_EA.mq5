@@ -73,6 +73,10 @@ string   g_phase        = "IDLE";
 string   g_lastVotedBy  = "";
 string   g_lastSageNote = "";
 ulong    g_halfTicket   = 0;       // ticket that already had its TP1 half banked
+// decision snapshot (JSON fragments) sent in status → web "การตัดสินใจ" card
+string   g_votesJson    = "[]";
+string   g_resultJson   = "null";
+string   g_decJson      = "\"votes\":[],\"voteResult\":null,\"sage\":null";
 
 #define SYM _Symbol
 
@@ -167,12 +171,30 @@ void RunPipeline()
    if(buyVotes  >= 2) dir =  1;
    if(sellVotes >= 2) dir = -1;
    g_lastVotedBy = VotedBy(dir, h1, h2, h3);
+
+   // record the decision snapshot for the web "การตัดสินใจ" card (ASCII strings)
+   int conf1 = (h1!=0)? (int)MathMin(95.0, adx*3.0) : (int)MathMin(35.0, adx*2.0);
+   int conf2 = (brokeUp||brokeDown)? 68 : 30;
+   int conf3 = (rsi>=70)? (int)MathMin(95.0,(rsi-50)*2.0) : (rsi<=30? (int)MathMin(95.0,(50-rsi)*2.0):30);
+   string n1 = StringFormat("ADX %.0f, EMA%d%sEMA%d", adx, FastMA, (fast>slow?">":"<"), SlowMA);
+   string n2 = brokeUp? "broke swing high" : (brokeDown? "broke swing low":"no break");
+   string n3 = StringFormat("RSI %.0f", rsi);
+   g_votesJson = "[" + HawkJson("HAWK-1","Trend",h1,conf1,n1) + ","
+                     + HawkJson("HAWK-2","Structure",h2,conf2,n2) + ","
+                     + HawkJson("HAWK-3","Fade",h3,conf3,n3) + "]";
+   g_resultJson = (dir!=0)? StringFormat("{\"side\":\"%s\",\"ratio\":\"%d / 3\"}",
+                              (dir>0?"BUY":"SELL"), MathMax(buyVotes,sellVotes)) : "null";
+   SetDecision("null");
    if(dir==0) { g_phase="IDLE"; return; }   // no 2/3 consensus → stand down
 
    // ---- SAGE: independent risk check + VETO ----
    g_phase = "RISK";
    if(UseNewsBlock && g_newsBlock)
-   { g_lastSageNote="VETO — high-impact "+g_newsCur+" news window"; g_phase="IDLE"; return; }
+   {
+      g_lastSageNote = "VETO - high-impact "+g_newsCur+" news window";
+      SetDecision("{\"verdict\":\"VETO\",\"note\":\"high-impact "+g_newsCur+" news window\"}");
+      g_phase="IDLE"; return;
+   }
 
    double price = (dir>0) ? SymbolInfoDouble(SYM,SYMBOL_ASK) : SymbolInfoDouble(SYM,SYMBOL_BID);
    double sl    = (dir>0) ? price - SL_ATR*atr : price + SL_ATR*atr;
@@ -180,8 +202,15 @@ void RunPipeline()
    double tp2   = (dir>0) ? price + TP2_ATR*atr: price - TP2_ATR*atr;
    double rr    = MathAbs(tp2-price)/MathMax(MathAbs(price-sl),_Point);
    if(rr < MinRR)
-   { g_lastSageNote=StringFormat("VETO — R:R %.2f < %.1f",rr,MinRR); g_phase="IDLE"; return; }
-   g_lastSageNote = StringFormat("APPROVE — R:R 1:%.1f, SL@%.2f", rr, sl);
+   {
+      g_lastSageNote = StringFormat("VETO - R:R %.2f < %.1f",rr,MinRR);
+      SetDecision(StringFormat("{\"verdict\":\"VETO\",\"note\":\"R:R %.2f below %.1f floor\"}",rr,MinRR));
+      g_phase="IDLE"; return;
+   }
+   g_lastSageNote = StringFormat("APPROVE - R:R 1:%.1f, SL@%.2f", rr, sl);
+   SetDecision(StringFormat(
+      "{\"verdict\":\"APPROVE\",\"note\":\"tighten SL, ladder TP\",\"slFrom\":%.2f,\"slTo\":%.2f,\"rr\":\"1 : %.1f\"}",
+      sl, sl, rr));
 
    // ---- IRON: hard rules gate ----
    g_phase = "RULES";
@@ -217,6 +246,19 @@ string VotedBy(int dir,int h1,int h2,int h3)
    if((dir>0&&h2>0)||(dir<0&&h2<0)) s+="HAWK-2 ";
    if((dir>0&&h3>0)||(dir<0&&h3<0)) s+="HAWK-3 ";
    StringTrimRight(s); return s;
+}
+// one HAWK vote as JSON (matches web renderDecision: name/style/side/conf/note)
+string HawkJson(string name,string style,int v,int conf,string note)
+{
+   string side = (v>0)?"BUY":((v<0)?"SELL":"-");
+   return StringFormat("{\"name\":\"%s\",\"style\":\"%s\",\"side\":\"%s\",\"conf\":%d,\"note\":\"%s\"}",
+                       name, style, side, conf, note);
+}
+// assemble the decision fragment (votes + result + sage) sent inside status
+void SetDecision(string sageJson)
+{
+   g_decJson = StringFormat("\"votes\":%s,\"voteResult\":%s,\"sage\":%s",
+                            g_votesJson, g_resultJson, sageJson);
 }
 
 // IRON: the unfeeling code gate — R:R already checked by SAGE; here spread,
@@ -338,10 +380,11 @@ void PushStatus()
       "\"price\":%.2f,\"equity\":%.2f,\"position\":%s,"
       "\"daily\":{\"trades\":%d,\"win\":%d,\"loss\":%d,\"winrate\":%d,\"pnl\":%.1f},"
       "\"weekly\":{\"trades\":%d,\"win\":%d,\"loss\":%d,\"winrate\":%d,\"pnl\":%.1f},"
+      "%s,"
       "\"prices\":{\"XAU/USD\":{\"bid\":%.2f,\"ask\":%.2f,\"spread\":%.0f}},"
       "\"ts\":%d}",
       BridgeSecret, mode, g_phase, bid, AccountInfoDouble(ACCOUNT_EQUITY), posJson,
-      dTr,dW,dL,dWR,dP, wTr,wW,wL,wWR,wP, bid, ask, spread, (int)TimeGMT());
+      dTr,dW,dL,dWR,dP, wTr,wW,wL,wWR,wP, g_decJson, bid, ask, spread, (int)TimeGMT());
    HttpPost(body);
 }
 

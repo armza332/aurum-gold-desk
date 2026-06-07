@@ -67,3 +67,6 @@
 .cbtn.wide{ width:100%; margin-top:10px; }
 
 .cfoot{ font-size:10.5px; color:var(--dim,#6b7c96); margin-top:12px; text-align:center; line-height:1.5; }
+
+/* SAGE VETO verdict (live decisions) — base .verdict styling lives in styles.css */
+.verdict.no{ color:#ff6b6b; }

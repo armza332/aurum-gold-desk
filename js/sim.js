@@ -199,6 +199,38 @@
     else if (s.position && typeof s.position === 'object') data.position = s.position;
     if (s.daily && typeof s.daily === 'object') Object.assign(data.daily, s.daily);
     if (s.weekly && typeof s.weekly === 'object') Object.assign(data.weekly, s.weekly);
+    // real decision from the EA (votes / 2-of-3 result / SAGE verdict)
+    if (Array.isArray(s.votes)) data.votes = s.votes;
+    if (s.voteResult !== undefined) data.voteResult = s.voteResult;
+    if (s.sage !== undefined) data.sage = s.sage || { verdict: null };
+    dirty = true;
+  }
+
+  // Clear demo seed when switching to live so nothing fake lingers before real
+  // data arrives. Market/news stays (EA can't fetch it) — the UI badges it "เดโม".
+  function enterLive() {
+    data.votes = []; data.voteResult = null; data.sage = { verdict: null };
+    data.lessons = [];
+    data.daily  = { trades: 0, win: 0, loss: 0, pnl: 0, winrate: 0 };
+    data.weekly = { trades: 0, win: 0, loss: 0, pnl: 0, winrate: 0 };
+    dirty = true;
+  }
+
+  // Map real closed trades (from bridge action=trades) → the "บทเรียน" card (losses).
+  function tsLabel(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000), p = n => (n < 10 ? '0' : '') + n;
+    return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function applyLiveTrades(trades) {
+    if (!Array.isArray(trades)) return;
+    const losses = trades.filter(t => Number(t.profit) < 0).slice(0, 5);
+    data.lessons = losses.map(t => ({
+      when: tsLabel(t.closeTime),
+      tag: '‑$' + Math.abs(Number(t.profit)).toFixed(0),
+      lesson: (t.side || '') + ' ปิด @ ' + (t.exit != null ? Number(t.exit).toFixed(2) : '?')
+            + ' • ' + (t.sageNote || (t.votedBy ? ('โหวตโดย ' + t.votedBy) : 'ทบทวนสาเหตุที่แพ้'))
+    }));
     dirty = true;
   }
 
@@ -210,7 +242,7 @@
   }
 
   window.Sim = {
-    data, init, update, toggle, enterIdle, enterSignal, applyLive,
+    data, init, update, toggle, enterIdle, enterSignal, applyLive, enterLive, applyLiveTrades,
     isDirty: () => dirty, clearDirty: () => { dirty = false; },
     fmtClock, PHASES, monActive: () => data.phase === 'IN_POSITION' || data.phase === 'EXECUTING'
   };

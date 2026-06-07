@@ -105,15 +105,19 @@
   function renderDecision() {
     const vr = D.voteResult;
     const votes = D.votes.map(v => `
-      <div class="vote ${v.side === 'BUY' ? 'buy' : 'sell'} ${vr ? 'on' : 'off'}">
+      <div class="vote ${v.side === 'BUY' ? 'buy' : (v.side === 'SELL' ? 'sell' : '')} ${vr ? 'on' : 'off'}">
         <div class="vhead"><b>${v.name}</b><span>${v.style}</span></div>
         <div class="vside">${v.side} <i>${v.conf}%</i></div>
         <div class="vnote">${esc(v.note)}</div>
       </div>`).join('');
-    const sageState = D.sage.verdict === 'APPROVE'
-      ? `<div class="verdict ok">SAGE: ผ่าน ✔</div><div class="snote">${esc(D.sage.note)}</div>
-         <div class="schips"><span>SL ${D.sage.slFrom}→<b>${D.sage.slTo}</b></span><span>R:R <b>${D.sage.rr}</b></span></div>`
-      : `<div class="verdict wait">SAGE: รอผลโหวต…</div><div class="snote">หัวหน้าความเสี่ยงตรวจซ้ำอิสระ มีสิทธิ์ VETO ก่อนปล่อยผ่าน</div>`;
+    let sageState;
+    if (D.sage.verdict === 'APPROVE')
+      sageState = `<div class="verdict ok">SAGE: ผ่าน ✔</div><div class="snote">${esc(D.sage.note)}</div>
+         <div class="schips"><span>SL ${D.sage.slFrom}→<b>${D.sage.slTo}</b></span><span>R:R <b>${D.sage.rr}</b></span></div>`;
+    else if (D.sage.verdict === 'VETO')
+      sageState = `<div class="verdict no">SAGE: VETO ✕</div><div class="snote">${esc(D.sage.note || 'หัวหน้าความเสี่ยงเบรกไม้นี้')}</div>`;
+    else
+      sageState = `<div class="verdict wait">SAGE: รอผลโหวต…</div><div class="snote">หัวหน้าความเสี่ยงตรวจซ้ำอิสระ มีสิทธิ์ VETO ก่อนปล่อยผ่าน</div>`;
     const rules = D.rules.map(r => `<li class="${r.ok ? 'ok' : 'no'}"><span>${esc(r.k)}</span><b>${esc(r.v)}</b></li>`).join('');
     $('decCard').innerHTML = `
       <div class="ctitle">การตัดสินใจ ${vr ? `<span class="badge g">โหวต ${vr.ratio} = ${vr.side}</span>` : '<span class="badge mute">รอสัญญาณ</span>'}</div>
@@ -124,8 +128,9 @@
 
   function renderMarket() {
     const m = D.market;
+    const demo = (window.CONFIG && CONFIG.isLive()) ? ' <span class="badge mute">เดโม — ยังไม่ดึงจริง</span>' : '';
     $('mktCard').innerHTML = `
-      <div class="ctitle">ข่าว & อารมณ์ตลาด</div>
+      <div class="ctitle">ข่าว & อารมณ์ตลาด${demo}</div>
       <div class="fng">
         <div class="fngtop"><span>Fear & Greed</span><b>${m.fng} • ${m.fngLabel}</b></div>
         <div class="fngbar"><div class="fngfill" style="width:${m.fng}%"></div><span class="fngdot" style="left:${m.fng}%"></span></div>
@@ -151,8 +156,10 @@
   }
 
   function renderLessons() {
-    $('lesCard').innerHTML = `<div class="ctitle">บทเรียนจากไม้ที่แพ้ <span class="badge mute">บอทจำไว้เตือนตัวเอง</span></div>
-      ${D.lessons.map(l => `<div class="lesson"><div class="lhead"><span>${esc(l.when)}</span><b class="r">${l.tag}</b></div><div class="ltext">${esc(l.lesson)}</div></div>`).join('')}`;
+    const body = D.lessons.length
+      ? D.lessons.map(l => `<div class="lesson"><div class="lhead"><span>${esc(l.when)}</span><b class="r">${l.tag}</b></div><div class="ltext">${esc(l.lesson)}</div></div>`).join('')
+      : `<div class="ltext" style="opacity:.6;padding:4px 0">ยังไม่มีไม้ที่แพ้ — ดีแล้ว 👍</div>`;
+    $('lesCard').innerHTML = `<div class="ctitle">บทเรียนจากไม้ที่แพ้ <span class="badge mute">บอทจำไว้เตือนตัวเอง</span></div>${body}`;
   }
 
   function renderLog() {
