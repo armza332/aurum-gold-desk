@@ -29,7 +29,7 @@ bridgeURL: 'https://script.google.com/macros/s/XXXX/exec',
 
 ## สถานะ
 - ✅ ชั้น 1 สมอง (เว็บ) — เสร็จแล้ว รันเดโมได้
-- ⬜ ชั้น 2 สะพาน (Apps Script) — เฟสถัดไป
+- ✅ ชั้น 2 สะพาน (Apps Script) — เสร็จแล้ว ดู [`bridge/README.md`](bridge/README.md) สำหรับ deploy
 - ⬜ ชั้น 3 กล้ามเนื้อ (MT5 EA, magic 992611) — เฟสถัดไป
 
 รายละเอียดสถาปัตยกรรม + Bridge contract → [`ARCHITECTURE.md`](ARCHITECTURE.md)

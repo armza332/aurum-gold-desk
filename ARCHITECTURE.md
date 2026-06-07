@@ -21,7 +21,7 @@
                             │ Apps Script bridge (HTTPS, action=…)
                             ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  ชั้น 2 — สะพาน (Google Apps Script)            ⬜ เฟสถัดไป        │
+│  ชั้น 2 — สะพาน (Google Apps Script)            ✅ สร้างแล้ว        │
 │  bridge/Code.gs → /exec                                          │
 │                                                                  │
 │  • เก็บ: LATEST_STATUS · LATEST_PRICES · LIVE_TRADES · คิวคำสั่ง  │
@@ -61,27 +61,36 @@
 
 ---
 
-## 🔌 Bridge Contract (สเปกสำหรับสร้างชั้น 2 + 3)
+## 🔌 Bridge Contract  ✅ สร้างแล้วที่ `bridge/Code.gs`
 
-ชั้น 1 พร้อมคุยแล้ว — เลเยอร์นี้ implement ที่ `js/bridge.js` ยึดแพทเทิร์น `action=` แบบเดียวกับโปรเจคแม่
+ชั้น 1 (`js/bridge.js`) ↔ ชั้น 2 (`bridge/Code.gs`) ↔ ชั้น 3 (EA) คุยกันตามนี้
+> **status เก็บ/คืนแบบ FLAT** — `Sim.applyLive()` อ่าน field ที่ระดับบนสุดตรง ๆ
 
 ### Web → Bridge (GET)
 | Endpoint | คืนค่า |
 |---|---|
-| `?action=status&t=<ts>` | `{ mode, phase, price, equity, position, daily, weekly, ts }` |
-| `?action=prices&t=<ts>` | `{ "XAU/USD": { bid, ask, spread } }` |
-| `?action=trades&t=<ts>` | `[ { posId, side, lot, entry, sl, tp1, tp2, pnl, openTime } ]` |
+| `?action=status` | flat: `{ ok, online, ageSec, mode, phase, price, equity, position, daily, weekly, ts }` |
+| `?action=prices` | `{ ok, prices:{ "XAU/USD":{bid,ask,spread} }, online }` |
+| `?action=trades[&since=ts]` | `{ ok, trades:[ {posId,side,lot,entry,exit,profit,...} ], total }` |
+| `?action=news[&win=15]` | `{ ok, news:{risk,block,near,cur} }` |
 
-### Web → Bridge (POST คำสั่งเข้าคิว)
+### Web → Bridge (POST คำสั่ง — whitelist, ไม่ต้องใช้ secret)
 ```json
-{ "cmd": "PAUSE" | "RESUME" | "CLOSE_ALL" | "SIGNAL", "...": "..." }
+{ "kind": "cmd", "cmd": "pause" | "resume" | "close_all" | "signal", "args": null }
 ```
 
-### EA → Bridge (POST เขียน state)
+### EA → Bridge (POST เขียน state — ต้องมี secret)
 ```json
-{ "action": "status", "phase": "...", "price": 2348.2, "position": {...} }
-{ "action": "trade",  "posId": "...", "side": "BUY", "pnl": 12.4 }
+{ "kind": "status", "secret": "...", "phase": "...", "price": 2348.2,
+  "position": {...}, "equity": 10000, "daily": {...}, "prices": {...}, "ts": ... }
+{ "kind": "trade",  "secret": "...", "posId": "...", "side": "BUY",
+  "profit": 12.4, "votedBy": ["HAWK-1","HAWK-2"], "sageNote": "..." }
 ```
+
+### EA → Bridge (GET รับคำสั่ง + ความเสี่ยงข่าว)
+| Endpoint | คืนค่า |
+|---|---|
+| `?action=command&since=N&secret=…` | `{ ok, cmd, args, id, ts, news:{risk,block,near,cur} }` |
 
 ### รูปร่าง `status.position` (ตรงกับที่ Web การ์ด "ออเดอร์" ใช้)
 ```json
@@ -90,6 +99,7 @@
 ```
 
 > ค่า phase ที่ valid: `IDLE · SCANNING · ANALYZING · RISK · RULES · EXECUTING · IN_POSITION`
+> **ความปลอดภัย:** secret กันเฉพาะ EA writes (status/trade) เพราะเว็บ public; คำสั่งจากเว็บกันด้วย whitelist แทน — ดู `bridge/README.md`
 
 ---
 
@@ -147,7 +157,7 @@ TradeXAU USD/
 ## 📍 สถานะ & ก้าวถัดไป
 
 - ✅ **ชั้น 1 (สมอง)** — เสร็จ: เดโมรันได้, โครง live พร้อม, contract นิยามแล้ว
-- ⬜ **ชั้น 2 (สะพาน)** — สร้าง `bridge/Code.gs` ตาม contract ด้านบน
+- ✅ **ชั้น 2 (สะพาน)** — เสร็จ: `bridge/Code.gs` + คู่มือ deploy `bridge/README.md`
 - ⬜ **ชั้น 3 (กล้ามเนื้อ)** — สร้าง `mt5/Aurum_EA.mq5` (XAU/USD, magic 992611, 7-agent logic + กฎเหล็ก)
 
 ## ⚠️ ข้อควรระวัง

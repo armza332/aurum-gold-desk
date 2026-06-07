@@ -35,14 +35,16 @@
   async function getPrices() { return getJSON('prices'); }
   async function getTrades() { return getJSON('trades'); }
 
-  // Queue a command for the EA. no-cors because Apps Script doesn't echo CORS.
-  async function sendCommand(payload) {
-    if (!live()) { console.info('[bridge] (mock) command:', payload); return false; }
+  // Queue a command for the EA. Accepts a string ('pause') or {cmd, args}.
+  // no-cors because Apps Script doesn't echo CORS headers.
+  async function sendCommand(cmd) {
+    const body = typeof cmd === 'string' ? { kind: 'cmd', cmd } : Object.assign({ kind: 'cmd' }, cmd);
+    if (!live()) { console.info('[bridge] (mock) command:', body); return false; }
     try {
       await fetch(url(), {
         method: 'POST', mode: 'no-cors',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(body)
       });
       return true;
     } catch (e) {

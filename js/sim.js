@@ -190,7 +190,7 @@
   // payload (e.g. price-only heartbeat) still updates cleanly. Shape mirrors
   // the action=status contract documented in bridge.js.
   function applyLive(s) {
-    if (!s || typeof s !== 'object') return;
+    if (!s || typeof s !== 'object' || s.ok === false) return;
     if (typeof s.price === 'number') { data.prevPrice = data.price; data.price = s.price; }
     if (typeof s.equity === 'number') data.equity = s.equity;
     if (s.phase && PHASES.includes(s.phase)) data.phase = s.phase;
