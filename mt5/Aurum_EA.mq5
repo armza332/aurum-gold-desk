@@ -19,13 +19,13 @@
 //|           https://script.googleusercontent.com                   |
 //+------------------------------------------------------------------+
 #property copyright "AURUM"
-#property version   "1.10"
+#property version   "1.20"
 #property strict
 
 // Bump this on every code change so the running EA can be verified against the repo.
 // Shown on the chart dashboard and sent to the web (status.ver) — if the web shows a
 // different version than this file, the chart is still running an old compile.
-#define EA_VERSION "1.1.0"
+#define EA_VERSION "1.2.0"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -67,13 +67,32 @@ input double  TrailStartATR    = 1.0;           // start trailing once price is 
 input bool    TrailAfterTP1Only= false;         // true = only trail the runner after TP1 (before that, fixed SL)
 input bool    UseNewsBlock     = true;          // stand down ±window around high-impact USD news
 
-input group "── Self-learning (learns from losses) ──"
+input group "── Confluence (HAWK ×5: + Bollinger + Fib) ──"
+input int     BBPeriod         = 20;            // Bollinger period
+input double  BBDev            = 2.0;           // Bollinger deviation
+input int     FibLookback      = 50;            // bars for Fib swing high/low
+input int     MinAgree         = 3;             // need this many agents agreeing (of the counting ones)
+
+input group "── Portfolio risk ──"
+input double  MaxPerTradeRiskPct = 5.0;         // skip a trade if even min lot risks more than this % (small acct guard)
+input double  MaxPortfolioRiskPct= 6.0;         // skip if total open risk would exceed this % of equity
+input double  SpreadTrailBuffer  = 1.5;         // keep trailing SL at least this × spread away from price
+
+input group "── Self-learning ──"
 input bool    UseLossAdaptive  = true;          // after losses: cut risk, cooldown, then halt the day
 input int     MaxConsecLosses  = 5;             // halt entries for the day at this many losses in a row
 input int     LossCooldownMin  = 15;            // after a loss, skip new entries for this many minutes (anti-revenge)
+input bool    UseSelfImprove   = true;          // learn each agent's win-rate → weight its vote (KB-style)
+input double  MinAgentWeight   = 0.5;           // agents below this weight are benched (don't count toward consensus)
+input double  LearnRate        = 0.08;          // how fast agent weights move on each win/loss
 
 //============================ STATE ================================
-int    hFast, hSlow, hRSI, hATR, hADX;
+int    hFast, hSlow, hRSI, hATR, hADX, hBB;
+// self-improvement: per-agent vote weights (HAWK-1..5), persisted in GlobalVariables
+double g_w[5];
+string g_agentName[5] = {"HAWK-1","HAWK-2","HAWK-3","HAWK-4","HAWK-5"};
+string g_agentStyle[5] = {"Trend","Structure","Fade","Bollinger","Fib"};
+int    g_lastMask = 0;   // bitmask of agents that backed the last opened trade
 datetime g_lastBar      = 0;
 datetime g_lastStatus   = 0;
 datetime g_lastCommand  = 0;
@@ -113,12 +132,14 @@ int OnInit()
    hRSI  = iRSI(SYM, PERIOD_CURRENT, RSIPeriod, PRICE_CLOSE);
    hATR  = iATR(SYM, PERIOD_CURRENT, ATRPeriod);
    hADX  = iADX(SYM, PERIOD_CURRENT, ADXPeriod);
+   hBB   = iBands(SYM, PERIOD_CURRENT, BBPeriod, 0, BBDev, PRICE_CLOSE);
    if(hFast==INVALID_HANDLE || hSlow==INVALID_HANDLE || hRSI==INVALID_HANDLE ||
-      hATR==INVALID_HANDLE  || hADX==INVALID_HANDLE)
+      hATR==INVALID_HANDLE  || hADX==INVALID_HANDLE || hBB==INVALID_HANDLE)
    {
       Print("AURUM: indicator handle failed"); return INIT_FAILED;
    }
 
+   LoadWeights();      // restore each agent's learned vote weight
    ResetDayAnchor();
    PrintFormat("AURUM EA v%s online · %s · magic %d · trading=%s · bridge=%s",
                EA_VERSION, SYM, MagicNumber, (EnableTrading?"ON":"OFF"),
@@ -143,7 +164,7 @@ string ResolveGold()
 void OnDeinit(const int reason)
 {
    IndicatorRelease(hFast); IndicatorRelease(hSlow); IndicatorRelease(hRSI);
-   IndicatorRelease(hATR);  IndicatorRelease(hADX);
+   IndicatorRelease(hATR);  IndicatorRelease(hADX);  IndicatorRelease(hBB);
    Comment("");
 }
 
@@ -175,8 +196,8 @@ void OnTick()
    { PushStatus(); g_lastStatus = now; }
 }
 
-//====================== THE 7-AGENT PIPELINE ======================
-// SCANNER → HAWK×3 vote → SAGE veto → IRON rules → execute
+//====================== THE PIPELINE ==============================
+// SCANNER → HAWK×5 confluence vote → SAGE veto → IRON rules → execute
 void RunPipeline()
 {
    g_phase = "SCANNING";
@@ -186,6 +207,7 @@ void RunPipeline()
    // ---- gather indicator reads (closed bar = shift 1) ----
    double fast = Buf(hFast,1),  slow = Buf(hSlow,1);
    double rsi  = Buf(hRSI,1),   adx  = Buf(hADX,1);
+   double upBB = BufN(hBB,1,1), loBB = BufN(hBB,2,1);
    double close= iClose(SYM,PERIOD_CURRENT,1);
    double hi   = iHigh(SYM,PERIOD_CURRENT,iHighest(SYM,PERIOD_CURRENT,MODE_HIGH,(int)SwingLookback,2));
    double lo   = iLow (SYM,PERIOD_CURRENT,iLowest (SYM,PERIOD_CURRENT,MODE_LOW ,(int)SwingLookback,2));
@@ -195,33 +217,66 @@ void RunPipeline()
    bool brokeDown = close < lo;
    if(!brokeUp && !brokeDown) { g_phase="IDLE"; return; }
 
+   // Fib retracement position of close within the larger swing
+   double fHi = iHigh(SYM,PERIOD_CURRENT,iHighest(SYM,PERIOD_CURRENT,MODE_HIGH,FibLookback,2));
+   double fLo = iLow (SYM,PERIOD_CURRENT,iLowest (SYM,PERIOD_CURRENT,MODE_LOW ,FibLookback,2));
+   double fibPct = (fHi>fLo)? (close-fLo)/(fHi-fLo)*100.0 : 50.0;
+   bool   golden = (fibPct>=38.2 && fibPct<=61.8);
+
    g_phase = "ANALYZING";
-   // ---- HAWK votes: +1 = BUY, -1 = SELL, 0 = abstain ----
-   int h1 = HawkTrend(fast, slow, adx);
-   int h2 = HawkStructure(brokeUp, brokeDown);
-   int h3 = HawkFade(rsi);
+   // ---- HAWK ×5 votes: +1 = BUY, -1 = SELL, 0 = abstain ----
+   int v[5];
+   v[0] = HawkTrend(fast, slow, adx);
+   v[1] = HawkStructure(brokeUp, brokeDown);
+   v[2] = HawkFade(rsi);
+   v[3] = HawkBoll(close, upBB, loBB);
+   v[4] = HawkFib(golden, brokeUp, brokeDown);
 
-   int buyVotes  = (h1>0)+(h2>0)+(h3>0);
-   int sellVotes = (h1<0)+(h2<0)+(h3<0);
+   // weighted consensus — agents whose learned weight is below MinAgentWeight are
+   // benched (still show an opinion, but don't count). Need MinAgree of the rest.
+   int buyVotes=0, sellVotes=0;
+   for(int i=0;i<5;i++)
+   {
+      if(UseSelfImprove && g_w[i] < MinAgentWeight) continue;   // benched
+      if(v[i]>0) buyVotes++; else if(v[i]<0) sellVotes++;
+   }
    int dir = 0;
-   if(buyVotes  >= 2) dir =  1;
-   if(sellVotes >= 2) dir = -1;
-   g_lastVotedBy = VotedBy(dir, h1, h2, h3);
+   if(buyVotes  >= MinAgree) dir =  1;
+   if(sellVotes >= MinAgree) dir = -1;
 
-   // record the decision snapshot for the web "การตัดสินใจ" card (ASCII strings)
-   int conf1 = (h1!=0)? (int)MathMin(95.0, adx*3.0) : (int)MathMin(35.0, adx*2.0);
-   int conf2 = (brokeUp||brokeDown)? 68 : 30;
-   int conf3 = (rsi>=70)? (int)MathMin(95.0,(rsi-50)*2.0) : (rsi<=30? (int)MathMin(95.0,(50-rsi)*2.0):30);
-   string n1 = StringFormat("ADX %.0f, EMA%d%sEMA%d", adx, FastMA, (fast>slow?">":"<"), SlowMA);
-   string n2 = brokeUp? "broke swing high" : (brokeDown? "broke swing low":"no break");
-   string n3 = StringFormat("RSI %.0f", rsi);
-   g_votesJson = "[" + HawkJson("HAWK-1","Trend",h1,conf1,n1) + ","
-                     + HawkJson("HAWK-2","Structure",h2,conf2,n2) + ","
-                     + HawkJson("HAWK-3","Fade",h3,conf3,n3) + "]";
-   g_resultJson = (dir!=0)? StringFormat("{\"side\":\"%s\",\"ratio\":\"%d / 3\"}",
-                              (dir>0?"BUY":"SELL"), MathMax(buyVotes,sellVotes)) : "null";
+   // confidences + notes (ASCII) — confidence scaled by the agent's learned weight
+   int    cf[5]; string nt[5];
+   cf[0] = (v[0]!=0)? (int)MathMin(95.0, adx*3.0) : (int)MathMin(35.0, adx*2.0);
+   cf[1] = (brokeUp||brokeDown)? 68 : 30;
+   cf[2] = (rsi>=70)? (int)MathMin(95.0,(rsi-50)*2.0) : (rsi<=30? (int)MathMin(95.0,(50-rsi)*2.0):30);
+   cf[3] = (v[3]!=0)? 66 : 30;
+   cf[4] = golden? 64 : 28;
+   nt[0] = StringFormat("ADX %.0f, EMA%d%sEMA%d", adx, FastMA, (fast>slow?">":"<"), SlowMA);
+   nt[1] = brokeUp? "broke swing high" : (brokeDown? "broke swing low":"no break");
+   nt[2] = StringFormat("RSI %.0f", rsi);
+   nt[3] = StringFormat("close %s BB", close>upBB?">upper":(close<loBB?"<lower":"inside"));
+   nt[4] = StringFormat("Fib %.0f%%%s", fibPct, golden?" (golden)":"");
+
+   string parts="";
+   string votedBy="";
+   g_lastMask = 0;
+   for(int i=0;i<5;i++)
+   {
+      double w = UseSelfImprove? g_w[i] : 1.0;
+      int conf = (int)MathRound(cf[i]*w); if(conf>99)conf=99; if(conf<5)conf=5;
+      bool benched = (UseSelfImprove && g_w[i] < MinAgentWeight);
+      string note = nt[i] + StringFormat(" · w%.2f%s", w, benched?" (benched)":"");
+      if(StringLen(parts)>0) parts += ",";
+      parts += HawkJson(g_agentName[i], g_agentStyle[i], v[i], conf, note);
+      if(dir!=0 && v[i]==dir && !benched) { g_lastMask |= (1<<i); votedBy += g_agentName[i]+" "; }
+   }
+   StringTrimRight(votedBy);
+   g_lastVotedBy = votedBy;
+   g_votesJson = "[" + parts + "]";
+   g_resultJson = (dir!=0)? StringFormat("{\"side\":\"%s\",\"ratio\":\"%d / 5\"}",
+                              (dir>0?"BUY":"SELL"), (int)MathMax(buyVotes,sellVotes)) : "null";
    SetDecision("null");
-   if(dir==0) { g_phase="IDLE"; return; }   // no 2/3 consensus → stand down
+   if(dir==0) { g_phase="IDLE"; return; }   // not enough agreement → stand down
 
    // ---- self-learning guards (loss streak / anti-revenge cooldown) ----
    if(LossHalt())
@@ -290,13 +345,51 @@ int HawkFade(double rsi)
    if(rsi <= 30) return  1;                    // oversold  → fade up
    return 0;
 }
-string VotedBy(int dir,int h1,int h2,int h3)
+// HAWK-4 (Bollinger): mean-reversion at the bands
+int HawkBoll(double close,double upBB,double loBB)
 {
-   string s="";
-   if((dir>0&&h1>0)||(dir<0&&h1<0)) s+="HAWK-1 ";
-   if((dir>0&&h2>0)||(dir<0&&h2<0)) s+="HAWK-2 ";
-   if((dir>0&&h3>0)||(dir<0&&h3<0)) s+="HAWK-3 ";
-   StringTrimRight(s); return s;
+   if(loBB>0 && close < loBB) return  1;       // below lower band → buy the dip
+   if(upBB>0 && close > upBB) return -1;       // above upper band → fade
+   return 0;
+}
+// HAWK-5 (Fib): confirm the break only from a healthy 38.2–61.8% retracement
+int HawkFib(bool golden,bool brokeUp,bool brokeDown)
+{
+   if(!golden) return 0;
+   if(brokeUp)   return  1;
+   if(brokeDown) return -1;
+   return 0;
+}
+
+// ── Self-improvement: learned per-agent vote weights (KB-style) ──────────────
+// Each agent's weight rises when it backed a winner and falls when it backed a
+// loser. Persisted in terminal GlobalVariables so learning survives restarts.
+void LoadWeights()
+{
+   for(int i=0;i<5;i++)
+   {
+      string k = "AURUM_W"+(string)MagicNumber+"_"+(string)i;
+      g_w[i] = GlobalVariableCheck(k) ? GlobalVariableGet(k) : 1.0;
+      if(g_w[i]<=0) g_w[i]=1.0;
+   }
+}
+void SaveWeights()
+{
+   for(int i=0;i<5;i++)
+      GlobalVariableSet("AURUM_W"+(string)MagicNumber+"_"+(string)i, g_w[i]);
+}
+// On a close: reward/penalise every agent that backed the trade (mask), clamp 0.1..1.5
+void UpdateWeights(int mask,bool win)
+{
+   if(!UseSelfImprove || mask==0) return;
+   for(int i=0;i<5;i++)
+   {
+      if((mask & (1<<i))==0) continue;
+      g_w[i] += win ? LearnRate : -LearnRate;
+      if(g_w[i]>1.5) g_w[i]=1.5;
+      if(g_w[i]<0.1) g_w[i]=0.1;
+   }
+   SaveWeights();
 }
 // one HAWK vote as JSON (matches web renderDecision: name/style/side/conf/note)
 string HawkJson(string name,string style,int v,int conf,string note)
@@ -366,13 +459,58 @@ double LotForRisk(double entry,double sl)
    return lot;
 }
 
+// money at risk for a given lot/SL (account currency)
+double RiskMoneyForLot(double entry,double sl,double lot)
+{
+   double slPts = MathAbs(entry-sl)/_Point;
+   double tickVal = SymbolInfoDouble(SYM,SYMBOL_TRADE_TICK_VALUE);
+   double tickSize= SymbolInfoDouble(SYM,SYMBOL_TRADE_TICK_SIZE);
+   if(tickVal<=0||tickSize<=0) return 0;
+   return slPts * (tickVal*(_Point/tickSize)) * lot;
+}
+// total open risk across our positions (SL beyond entry = already protected → 0)
+double OpenRiskMoney()
+{
+   double tot=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong t=PositionGetTicket(i); if(t==0) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=SYM) continue;
+      double e=PositionGetDouble(POSITION_PRICE_OPEN), s=PositionGetDouble(POSITION_SL), v=PositionGetDouble(POSITION_VOLUME);
+      if(s<=0) { tot += RiskMoneyForLot(e, e-SL_ATR*Buf(hATR,1), v); continue; }  // no SL → assume default
+      double riskPts = (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)? (e-s):(s-e);
+      if(riskPts>0) tot += RiskMoneyForLot(e, s, v);
+   }
+   return tot;
+}
+
 // Open the trade with SL and the RUNNER target (TP2). TP1 is managed in code so
-// we can partial-close and move SL to breakeven (ladder). Stash levels in comment.
+// we can partial-close and move SL to breakeven (ladder). Stash levels + the
+// agent vote-mask in the comment (used at close for self-improvement).
 void ExecuteTrade(int dir,double price,double sl,double tp1,double tp2,double atr)
 {
    double lot = LotForRisk(price, sl);
    if(lot<=0) { g_phase="IDLE"; return; }
-   string cmt = StringFormat("AURUM|tp1=%.2f", tp1);   // remember TP1 for the ladder
+
+   // ---- portfolio risk gates ----
+   double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+   double rm = RiskMoneyForLot(price, sl, lot);
+   if(MaxPerTradeRiskPct>0 && eq>0 && rm > eq*MaxPerTradeRiskPct/100.0)
+   {
+      double pct = rm/eq*100.0;
+      g_lastSageNote = StringFormat("VETO - per-trade risk %.1f%% > %.1f%%", pct, MaxPerTradeRiskPct);
+      SetDecision(StringFormat("{\"verdict\":\"VETO\",\"note\":\"per-trade risk %.1f%% over cap (acct too small for min lot)\"}", pct));
+      PrintFormat("IRON skip: %s", g_lastSageNote); g_phase="IDLE"; return;
+   }
+   if(MaxPortfolioRiskPct>0 && eq>0 && (OpenRiskMoney()+rm) > eq*MaxPortfolioRiskPct/100.0)
+   {
+      g_lastSageNote = StringFormat("VETO - portfolio risk would exceed %.1f%%", MaxPortfolioRiskPct);
+      SetDecision(StringFormat("{\"verdict\":\"VETO\",\"note\":\"portfolio risk cap %.1f%% reached\"}", MaxPortfolioRiskPct));
+      PrintFormat("IRON skip: %s", g_lastSageNote); g_phase="IDLE"; return;
+   }
+
+   string cmt = StringFormat("AURUM|tp1=%.2f|v=%d", tp1, g_lastMask);  // tp1 + agent mask
 
    bool ok = (dir>0) ? trade.Buy (lot, SYM, price, sl, tp2, cmt)
                      : trade.Sell(lot, SYM, price, sl, tp2, cmt);
@@ -434,9 +572,16 @@ void TrailStop(long type, double entry, double cur, ulong ticket, bool halfDone)
    bool active = halfDone || (!TrailAfterTP1Only && profitATR >= TrailStartATR);
    if(!active) return;
 
+   // spread-aware exit: don't tighten the SL during a spread spike (a wide spread
+   // can stop you out on noise) — wait for it to normalise.
+   double spreadPts = (double)SymbolInfoInteger(SYM,SYMBOL_SPREAD);
+   if(spreadPts > MaxSpreadPts) return;
+
    double trailDist = TrailATR*atr;
    double stopsMin  = (double)SymbolInfoInteger(SYM,SYMBOL_TRADE_STOPS_LEVEL)*_Point;
-   if(trailDist < stopsMin) trailDist = stopsMin;        // keep legal distance from price
+   double spreadGap = spreadPts*_Point*SpreadTrailBuffer;   // keep SL clear of spread
+   if(trailDist < stopsMin)  trailDist = stopsMin;          // legal distance from price
+   if(trailDist < spreadGap) trailDist = spreadGap;         // + spread buffer
 
    double curSL = PositionGetDouble(POSITION_SL);
    double curTP = PositionGetDouble(POSITION_TP);
@@ -567,6 +712,10 @@ double Buf(int handle,int shift)
 {
    double b[]; if(CopyBuffer(handle,0,shift,1,b)<=0) return 0; return b[0];
 }
+double BufN(int handle,int buffer,int shift)   // read a specific buffer (e.g. BB bands)
+{
+   double b[]; if(CopyBuffer(handle,buffer,shift,1,b)<=0) return 0; return b[0];
+}
 bool HasPosition() { return PositionSelectByMagic(); }
 bool PositionSelectByMagic()
 {
@@ -602,6 +751,24 @@ double ParseTP1(string comment)
    string tail=StringSubstr(comment,p+4);
    int bar=StringFind(tail,"|"); if(bar>=0) tail=StringSubstr(tail,0,bar);
    return StringToDouble(tail);
+}
+int ParseMask(string comment)
+{
+   int p=StringFind(comment,"|v="); if(p<0) return 0;
+   return (int)StringToInteger(StringSubstr(comment,p+3));
+}
+// read the agent vote-mask stored on the position's ENTRY deal (restart-safe)
+int EntryMask(ulong posId)
+{
+   if(!HistorySelectByPosition(posId)) return 0;
+   int total=HistoryDealsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong t=HistoryDealGetTicket(i); if(t==0) continue;
+      if(HistoryDealGetInteger(t,DEAL_ENTRY)==DEAL_ENTRY_IN)
+         return ParseMask(HistoryDealGetString(t,DEAL_COMMENT));
+   }
+   return 0;
 }
 // day PnL helpers (for IRON's daily-loss cap + status)
 void ResetDayAnchor(){ g_dayStartEq=AccountInfoDouble(ACCOUNT_EQUITY); g_dayStamp=DayStamp(); }
@@ -661,6 +828,10 @@ void UpdateDashboard()
       s += "Learn: losses "+(string)g_consecLosses+"/"+(string)MaxConsecLosses
          + " · risk×"+DoubleToString(LossRiskFactor(),2)
          + (LossHalt()?" · HALT":(CooldownActive()?" · COOLDOWN":""))+"\n";
+   if(UseSelfImprove)
+      s += "KB w: Tr"+DoubleToString(g_w[0],2)+" St"+DoubleToString(g_w[1],2)
+         + " Fd"+DoubleToString(g_w[2],2)+" BB"+DoubleToString(g_w[3],2)
+         + " Fb"+DoubleToString(g_w[4],2)+"\n";
    if(StringLen(g_lastVotedBy)>0)  s += "Votes: "+g_lastVotedBy+"\n";
    if(StringLen(g_lastSageNote)>0) s += "SAGE : "+g_lastSageNote+"\n";
    if(HasPosition())
@@ -684,7 +855,6 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeResult& res)
 {
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
-   if(StringLen(BridgeURL)==0) return;
 
    ulong dealTicket = trans.deal;
    if(!HistoryDealSelect(dealTicket)) return;
@@ -702,12 +872,20 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
    string side   = (dtype==DEAL_TYPE_SELL)?"BUY":"SELL";   // closing deal is opposite the entry
    string outcome= (profit>=0)?"win":"loss";
 
-   // self-learning: track the losing streak (a win resets it, a loss extends it
-   // and starts the anti-revenge cooldown)
+   // self-learning: losing streak (anti-revenge) — runs with or without bridge
    if(profit < 0)      { g_consecLosses++; g_lastLossTime = TimeCurrent();
                          PrintFormat("AURUM learn: loss #%d in a row → risk ×%.2f", g_consecLosses, LossRiskFactor()); }
    else if(profit > 0) { g_consecLosses = 0; }
 
-   PushTrade(side, exit, profit, outcome, lot, posId);
+   // self-improvement: reward/penalise the agents that backed this trade
+   if(UseSelfImprove)
+   {
+      int mask = EntryMask(posId);
+      UpdateWeights(mask, profit>=0);
+      if(mask!=0) PrintFormat("AURUM KB: %s → weights now %.2f/%.2f/%.2f/%.2f/%.2f",
+                              outcome, g_w[0],g_w[1],g_w[2],g_w[3],g_w[4]);
+   }
+
+   if(StringLen(BridgeURL)>0) PushTrade(side, exit, profit, outcome, lot, posId);
 }
 //+------------------------------------------------------------------+

@@ -12,7 +12,7 @@
 
   const STAGES = [
     { k: 'scan', label: 'SCANNER', sub: 'สแกน', idx: 1 },
-    { k: 'hawk', label: 'HAWK 2/3', sub: 'โหวต', idx: 2 },
+    { k: 'hawk', label: 'HAWK ×5', sub: 'โหวต', idx: 2 },
     { k: 'sage', label: 'SAGE', sub: 'เสี่ยง', idx: 3 },
     { k: 'rules', label: 'กฎเหล็ก', sub: 'โค้ด', idx: 4 },
     { k: 'mt5', label: 'MT5', sub: 'ยิงไม้', idx: 5 }

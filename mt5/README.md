@@ -41,17 +41,29 @@ https://script.googleusercontent.com
 | `UseLossAdaptive` | true | เรียนรู้จากแพ้: ลดเสี่ยง+cooldown+halt |
 | `MaxConsecLosses` | 5 | แพ้ติดเท่านี้ → หยุดทั้งวัน |
 | `LossCooldownMin` | 15 | หลังแพ้ พักกี่นาที (กันล้างแค้น) |
+| `BBPeriod / BBDev` | 20 / 2.0 | Bollinger (HAWK-4) |
+| `FibLookback` | 50 | ช่วงหา swing สำหรับ Fib (HAWK-5) |
+| `MinAgree` | 3 | ต้องมีกี่ตัว(ที่นับ)เห็นตรงกันถึงเข้า |
+| `UseSelfImprove` | true | เรียนน้ำหนัก HAWK จากผลจริง (KB) |
+| `MinAgentWeight` | 0.5 | ต่ำกว่านี้ = bench ตัวนั้น (ไม่นับโหวต) |
+| `LearnRate` | 0.08 | น้ำหนักขยับเร็วแค่ไหนต่อ ชนะ/แพ้ |
+| `MaxPerTradeRiskPct` | 5.0 | ถ้าแม้แต่ lot ต่ำสุดเสี่ยงเกินนี้ → ข้าม (กันพอร์ตเล็ก) |
+| `MaxPortfolioRiskPct` | 6.0 | เสี่ยงรวมเปิดอยู่เกินนี้ → ข้าม |
+| `SpreadTrailBuffer` | 1.5 | เผื่อระยะ trailing SL ให้พ้น spread (× spread) |
 | `UseNewsBlock` | true | งดเข้าไม้รอบข่าวแรง USD (รับจาก bridge) |
 
-## ทีมตัดสินใจยังไง (ในโค้ด)
+## ทีมตัดสินใจยังไง (ในโค้ด) — HAWK ×5 confluence
 - **SCANNER** — รอ "เบรก swing high/low" ในรอบ `SwingLookback` แท่ง ถึงปลุกทีม
 - **HAWK-1 (เทรนด์):** EMA20 vs EMA50 + ADX>MinADX
 - **HAWK-2 (โครงสร้าง):** เบรกขึ้น = BUY / เบรกลง = SELL
-- **HAWK-3 (สวนกระแส):** RSI≥70 → fade ลง, ≤30 → fade ขึ้น (ไม่งั้นงดออกเสียง)
-- ต้อง **2 ใน 3** เห็นทางเดียวกัน ไม่งั้นพับ
+- **HAWK-3 (สวนกระแส):** RSI≥70 → fade ลง, ≤30 → fade ขึ้น
+- **HAWK-4 (Bollinger):** ราคาหลุดแถบล่าง = BUY / ทะลุแถบบน = SELL
+- **HAWK-5 (Fib):** ยืนยันเบรกเฉพาะตอนราคาอยู่โซน Fib 38.2–61.8% (golden)
+- ต้อง **≥ MinAgree (3)** ตัวที่ "นับ" เห็นทางเดียวกัน ไม่งั้นพับ
+- **พัฒนาตัวเอง:** แต่ละ HAWK มีน้ำหนัก (w) เรียนจากผลจริง — backed ไม้ชนะ w เพิ่ม, แพ้ w ลด (เก็บถาวรใน GlobalVariables); w < `MinAgentWeight` → ถูก **benched** (ยังโชว์ความเห็นแต่ไม่นับ)
 - **SAGE:** เช็คข่าว + คำนวณ SL/TP จาก ATR → veto ถ้า R:R < MinRR หรือมีข่าวแรง
-- **IRON:** spread / lot cap / เพดานขาดทุนวัน → ผ่านครบค่อยยิง
-- **ladder TP + trailing:** ถึง TP1 ปิดครึ่ง + เลื่อน SL มาทุน → จากนั้น **trail SL ตามราคา** (TrailATR×ATR) ล็อกกำไรไปเรื่อย ๆ จนชนหรือถึง TP2
+- **IRON:** spread / lot cap / เพดานขาดทุนวัน + **เพดานเสี่ยงต่อไม้/พอร์ต** (MaxPerTradeRiskPct/MaxPortfolioRiskPct) → ผ่านครบค่อยยิง
+- **ladder TP + trailing:** TP1 ปิดครึ่ง + SL→ทุน → **trail SL** (TrailATR×ATR, ไม่ขยับตอน spread พุ่ง) จนชนหรือถึง TP2
 
 ## คุยกับ bridge
 - ทุก `StatusEverySec` (10 วิ): POST `{kind:status}` → เว็บเห็นราคา/เฟส/ออเดอร์/equity
