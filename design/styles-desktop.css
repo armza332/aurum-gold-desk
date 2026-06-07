@@ -1,0 +1,84 @@
+/* styles-desktop.css — macOS-style window shell + two-column desktop layout.
+   Loads AFTER styles-modern.css and overrides only the shell + container layout;
+   all card/panel component styles are inherited unchanged. */
+
+body{
+  align-items:center;
+  background:
+    radial-gradient(120% 90% at 50% 0%, #0e1422 0%, #070a12 55%, #04060b 100%);
+  padding:26px;
+}
+
+/* the whole #app becomes a floating desktop window */
+#app{
+  max-width:1180px; width:100%; height:min(760px, calc(100dvh - 52px));
+  border-radius:16px; overflow:hidden;
+  border:1px solid rgba(255,255,255,.09);
+  background:linear-gradient(180deg,#0d121d,#0a0e17);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.05) inset,
+    0 40px 90px -30px rgba(0,0,0,.85),
+    0 14px 40px -20px rgba(0,0,0,.7);
+}
+
+/* ---- title bar with traffic lights ---- */
+.titlebar{
+  display:flex; align-items:center; gap:13px; padding:0 16px; height:42px;
+  background:linear-gradient(180deg,#171d2a,#11151f);
+  border-bottom:1px solid var(--hair);
+  flex:none;
+}
+.lights{display:flex;gap:8px}
+.lights span{width:12px;height:12px;border-radius:50%;display:block;box-shadow:0 0 0 .5px rgba(0,0,0,.25) inset}
+.lights .c1{background:#ff5f57}.lights .c2{background:#febc2e}.lights .c3{background:#28c840}
+.wtitle{display:flex;align-items:center;gap:9px;font-family:"Space Grotesk";font-weight:600;font-size:12.5px;color:var(--mut);letter-spacing:.02em;white-space:nowrap}
+.wtitle .dot{width:6px;height:6px;border-radius:50%;background:var(--gold);box-shadow:0 0 9px var(--gold)}
+.wtitle b{color:var(--ink);letter-spacing:.14em}
+.wtitle .wsub{color:var(--dim);font-weight:500;font-size:11px}
+.titlebar .spacer{flex:1}
+.wstat{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dim);white-space:nowrap}
+.wstat .seg{font-family:"JetBrains Mono";color:var(--mut)}
+
+/* topbar: keep but make it the in-window app header */
+.topbar{padding:13px 22px;flex:none}
+.brand .bn{font-size:15px}
+
+/* ---- desktop body: room (left) + panels (right) ---- */
+.deskbody{flex:1;display:flex;min-height:0}
+.leftpane{
+  flex:1 1 56%; min-width:0; display:flex; flex-direction:column;
+  border-right:1px solid var(--hair);
+  background:radial-gradient(120% 70% at 50% 0%, rgba(20,27,42,.5), transparent 70%);
+}
+.leftpane #stage{flex:1;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--hair);padding:20px 22px}
+.leftpane #stage #room{width:100%;max-width:760px;border-radius:10px;
+  box-shadow:0 18px 50px -22px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.05)}
+.leftpane #stage::after{border-radius:0}
+.tip{bottom:30px}
+
+.pipewrap{padding:18px 26px 14px}
+#pipeline{max-width:560px;margin:0 auto}
+.controls{padding:0 26px 22px;display:flex;justify-content:center}
+#toggleBtn{max-width:360px}
+
+.rightpane{
+  flex:1 1 44%; max-width:480px; min-width:360px; display:flex; flex-direction:column;
+  background:rgba(8,11,18,.4); min-height:0;
+}
+.rightpane #feed{padding:18px 18px 26px;gap:14px;overflow-x:hidden}
+
+/* slightly roomier cards on desktop */
+#feed .card{padding:17px 18px}
+
+/* responsive: narrow viewport falls back to single stacked column */
+@media (max-width: 900px){
+  body{padding:0;align-items:stretch}
+  #app{max-width:480px;height:100dvh;border-radius:0;border:none;margin:0 auto}
+  .titlebar{display:none}
+  .deskbody{flex-direction:column;overflow-y:auto}
+  .leftpane{flex:none;border-right:none}
+  .leftpane #stage{padding:0}
+  .leftpane #stage #room{max-width:none;border-radius:0;box-shadow:none}
+  .rightpane{max-width:none;min-width:0}
+  .rightpane #feed{overflow:visible}
+}

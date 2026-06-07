@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>AURUM — ห้องเทรดทอง AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles-modern.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- top bar -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="bn">AURUM</span>
+      <span class="bd">XAU AI Desk</span>
+    </div>
+    <div class="clockwrap"><span class="clk lcd" id="clock">21:58</span></div>
+    <div class="spacer"></div>
+    <div class="priceblock">
+      <span class="plab">XAU/USD</span>
+      <span id="priceWrap" class="up lcd"><span id="priceArrow">▲</span><span id="price">2348.20</span></span>
+    </div>
+    <div class="spacer"></div>
+    <div class="pill idle" id="modePill">● ว่าง</div>
+  </div>
+
+  <!-- room -->
+  <div id="stage" data-screen-label="ห้องเทรด">
+    <canvas id="room"></canvas>
+    <div class="tip">แตะตัวละครเพื่อดูว่ากำลังทำอะไร</div>
+    <div id="popup"></div>
+  </div>
+
+  <!-- pipeline -->
+  <div class="pipewrap">
+    <div id="pipeline"></div>
+    <div class="phaseline">สถานะทีม: <b id="phaseLabel">ว่าง — เฝ้าตลาด</b></div>
+  </div>
+
+  <!-- control -->
+  <div class="controls">
+    <button id="toggleBtn"><span class="bt">▶ จำลองสัญญาณเข้า</span><span class="bs">ดูทีมทำงานเป็นทอด ๆ</span></button>
+  </div>
+
+  <!-- feed -->
+  <div id="feed">
+    <div class="card pos flat" id="posCard"></div>
+    <div class="card" id="decCard"></div>
+    <div class="card" id="mktCard"></div>
+    <div class="card" id="sumCard"></div>
+    <div class="card" id="lesCard"></div>
+    <div class="card">
+      <div class="ctitle">ไทม์ไลน์เหตุการณ์</div>
+      <div class="logwrap"><ul id="logList"></ul></div>
+    </div>
+    <div class="foot">เดโม — ข้อมูลตัวอย่าง • ยังไม่ได้เชื่อมต่อ MT5 จริง</div>
+  </div>
+
+</div>
+
+<script src="js/pixel.js"></script>
+<script src="js/scene.js"></script>
+<script src="js/agents.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
