@@ -147,7 +147,7 @@
         <div class="sumrow"><span>ไม้ ${o.trades}</span><span class="g">ชนะ ${o.win}</span><span class="r">แพ้ ${o.loss}</span><span>${o.winrate}%</span></div>
       </div>`;
     $('sumCard').innerHTML = `<div class="ctitle">สรุปผล</div><div class="sumwrap">${blk(d,'วันนี้')}${blk(w,'สัปดาห์นี้')}</div>
-      <div class="equity">พอร์ต <b class="lcd">$${(D.equity + D.weekly.pnl).toFixed(0)}</b></div>`;
+      <div class="equity">พอร์ต <b class="lcd">$${D.equity.toFixed(0)}</b></div>`;
   }
 
   function renderLessons() {

@@ -327,15 +327,50 @@ void PushStatus()
    double spread = (double)SymbolInfoInteger(SYM,SYMBOL_SPREAD);
    string mode = HasPosition() ? "signal" : "idle";
 
+   // Full realized stats from history so the web summary is REAL (not demo seed).
+   int dTr,dW,dL; double dP; PeriodStats(DayStamp(),  dTr,dW,dL,dP);
+   int wTr,wW,wL; double wP; PeriodStats(WeekStart(), wTr,wW,wL,wP);
+   int dWR = (dTr>0)? (int)MathRound(100.0*dW/dTr):0;
+   int wWR = (wTr>0)? (int)MathRound(100.0*wW/wTr):0;
+
    string body = StringFormat(
       "{\"kind\":\"status\",\"secret\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
       "\"price\":%.2f,\"equity\":%.2f,\"position\":%s,"
-      "\"daily\":{\"pnl\":%.1f},"
+      "\"daily\":{\"trades\":%d,\"win\":%d,\"loss\":%d,\"winrate\":%d,\"pnl\":%.1f},"
+      "\"weekly\":{\"trades\":%d,\"win\":%d,\"loss\":%d,\"winrate\":%d,\"pnl\":%.1f},"
       "\"prices\":{\"XAU/USD\":{\"bid\":%.2f,\"ask\":%.2f,\"spread\":%.0f}},"
       "\"ts\":%d}",
-      BridgeSecret, mode, g_phase, bid, AccountInfoDouble(ACCOUNT_EQUITY),
-      posJson, DayPnLMoney(), bid, ask, spread, (int)TimeGMT());
+      BridgeSecret, mode, g_phase, bid, AccountInfoDouble(ACCOUNT_EQUITY), posJson,
+      dTr,dW,dL,dWR,dP, wTr,wW,wL,wWR,wP, bid, ask, spread, (int)TimeGMT());
    HttpPost(body);
+}
+
+// Realized trade stats for closed deals (our magic/symbol) since `from`.
+void PeriodStats(datetime from, int &trades, int &wins, int &losses, double &pnl)
+{
+   trades=0; wins=0; losses=0; pnl=0;
+   if(!HistorySelect(from, TimeCurrent()+1)) return;
+   int total = HistoryDealsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong t = HistoryDealGetTicket(i);
+      if(t==0) continue;
+      if(HistoryDealGetInteger(t,DEAL_MAGIC)!=MagicNumber) continue;
+      if(HistoryDealGetString(t,DEAL_SYMBOL)!=SYM) continue;
+      if(HistoryDealGetInteger(t,DEAL_ENTRY)!=DEAL_ENTRY_OUT) continue;  // realized closes
+      double p = HistoryDealGetDouble(t,DEAL_PROFIT)
+               + HistoryDealGetDouble(t,DEAL_SWAP)
+               + HistoryDealGetDouble(t,DEAL_COMMISSION);
+      trades++; pnl+=p; if(p>=0) wins++; else losses++;
+   }
+}
+
+// Monday 00:00 of the current week (server time).
+datetime WeekStart()
+{
+   MqlDateTime d; TimeToStruct(TimeCurrent(),d);
+   int back = (d.day_of_week==0)? 6 : d.day_of_week-1;  // days since Monday (Sun=0)
+   return DayStamp() - back*86400;
 }
 
 // POST a closed-trade record (kind:trade) — feeds the web "lessons" loop.
