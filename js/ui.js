@@ -143,9 +143,9 @@
         <div class="fngbar"><div class="fngfill" style="width:${m.fng}%"></div><span class="fngdot" style="left:${m.fng}%"></span></div>
       </div>
       <div class="mgrid">
-        <div><span>DXY</span><b class="${m.dxyChg<0?'g':'r'}">${m.dxy} (${m.dxyChg}%)</b></div>
-        <div><span>Funding</span><b>+${m.funding}%</b></div>
-        <div><span>Long/Short</span><b>${m.longShort}</b></div>
+        <div><span>DXY</span><b class="${m.dxyChg<0?'g':'r'}">${m.dxy!=null?`${m.dxy} (${m.dxyChg}%)`:'—'}</b></div>
+        <div><span>Funding</span><b>${m.funding!=null?`+${m.funding}%`:'—'}</b></div>
+        <div><span>Long/Short</span><b>${m.longShort!=null?m.longShort:'—'}</b></div>
       </div>
       <ul class="news">${m.news.map(n => `<li><span class="nsrc">${n.src}</span>${esc(n.t)}</li>`).join('')}</ul>`;
   }
@@ -163,10 +163,16 @@
   }
 
   function renderLessons() {
+    const L = D.learn;
+    let learnNote = '';
+    if (L && (L.consec > 0 || L.halt || L.cooldown)) {
+      const state = L.halt ? 'หยุดทั้งวัน (แพ้ติดเยอะ)' : (L.cooldown ? 'พักหลังแพ้ (กันล้างแค้น)' : 'ลดความเสี่ยงอัตโนมัติ');
+      learnNote = `<div class="ltext" style="color:#ffce63;padding:4px 0 8px">🧠 ${state} • แพ้ติด ${L.consec} • เสี่ยงเหลือ ${L.riskPct}%</div>`;
+    }
     const body = D.lessons.length
       ? D.lessons.map(l => `<div class="lesson"><div class="lhead"><span>${esc(l.when)}</span><b class="r">${l.tag}</b></div><div class="ltext">${esc(l.lesson)}</div></div>`).join('')
       : `<div class="ltext" style="opacity:.6;padding:4px 0">ยังไม่มีไม้ที่แพ้ — ดีแล้ว 👍</div>`;
-    $('lesCard').innerHTML = `<div class="ctitle">บทเรียนจากไม้ที่แพ้ <span class="badge mute">บอทจำไว้เตือนตัวเอง</span></div>${body}`;
+    $('lesCard').innerHTML = `<div class="ctitle">บทเรียนจากไม้ที่แพ้ <span class="badge mute">บอทจำไว้เตือนตัวเอง</span></div>${learnNote}${body}`;
   }
 
   function renderLog() {

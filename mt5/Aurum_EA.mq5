@@ -39,6 +39,7 @@ input int     CommandEverySec  = 15;            // how often to poll commands + 
 
 input group "── Trading ──"
 input bool    EnableTrading    = true;          // master on/off (false = analyse only, no orders)
+input string  TradeSymbol      = "";            // gold symbol to trade. blank = auto-detect (XAUUSDm/XAUUSD/GOLD...)
 input long    MagicNumber      = 992611;        // this project's magic
 input double  RiskPercent      = 1.0;           // risk per trade (% of equity)
 input int     ScanSeconds      = 20;            // SCANNER cadence (seconds) — runs on new bar too
@@ -62,6 +63,11 @@ input double  TP1_ATR          = 1.8;           // first target (partial close +
 input double  TP2_ATR          = 3.6;           // runner target
 input bool    UseNewsBlock     = true;          // stand down ±window around high-impact USD news
 
+input group "── Self-learning (learns from losses) ──"
+input bool    UseLossAdaptive  = true;          // after losses: cut risk, cooldown, then halt the day
+input int     MaxConsecLosses  = 5;             // halt entries for the day at this many losses in a row
+input int     LossCooldownMin  = 15;            // after a loss, skip new entries for this many minutes (anti-revenge)
+
 //============================ STATE ================================
 int    hFast, hSlow, hRSI, hATR, hADX;
 datetime g_lastBar      = 0;
@@ -82,14 +88,21 @@ ulong    g_halfTicket   = 0;       // ticket that already had its TP1 half banke
 string   g_votesJson    = "[]";
 string   g_resultJson   = "null";
 string   g_decJson      = "\"votes\":[],\"voteResult\":null,\"sage\":null";
-
-#define SYM _Symbol
+// self-learning from losses
+int      g_consecLosses = 0;       // losses in a row (resets on a win)
+datetime g_lastLossTime = 0;       // for anti-revenge cooldown
+string   SYM            = "";      // resolved gold symbol (set in OnInit)
 
 //============================ INIT =================================
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(20);
+
+   SYM = ResolveGold();
+   SymbolSelect(SYM, true);                       // ensure it's in Market Watch for data
+   if(StringFind(SYM,"XAU")<0 && StringFind(SYM,"GOLD")<0 && StringFind(SYM,"GLD")<0)
+      PrintFormat("⚠ AURUM: '%s' doesn't look like gold — set TradeSymbol to your XAU symbol", SYM);
 
    hFast = iMA(SYM, PERIOD_CURRENT, FastMA, 0, MODE_EMA, PRICE_CLOSE);
    hSlow = iMA(SYM, PERIOD_CURRENT, SlowMA, 0, MODE_EMA, PRICE_CLOSE);
@@ -107,6 +120,20 @@ int OnInit()
                EA_VERSION, SYM, MagicNumber, (EnableTrading?"ON":"OFF"),
                (StringLen(BridgeURL)>0?"set":"offline"));
    return INIT_SUCCEEDED;
+}
+
+// Find the broker's gold symbol so the EA trades XAU even if dropped on another
+// chart (Exness = XAUUSDm). Honors TradeSymbol; else scans common names; else
+// falls back to the chart symbol (and OnInit warns).
+string ResolveGold()
+{
+   if(StringLen(TradeSymbol)>0) return TradeSymbol;
+   string cands[] = {"XAUUSDm","XAUUSD","XAUUSD.","XAUUSDc","XAUUSD.r","GOLD","GOLDm","XAUUSD_o"};
+   for(int i=0;i<ArraySize(cands);i++)
+      if(SymbolSelect(cands[i],true) && SymbolInfoDouble(cands[i],SYMBOL_BID)>0) return cands[i];
+   // chart symbol if it's already gold
+   if(StringFind(_Symbol,"XAU")>=0 || StringFind(_Symbol,"GOLD")>=0) return _Symbol;
+   return _Symbol;   // last resort (OnInit warns)
 }
 
 void OnDeinit(const int reason)
@@ -191,6 +218,21 @@ void RunPipeline()
                               (dir>0?"BUY":"SELL"), MathMax(buyVotes,sellVotes)) : "null";
    SetDecision("null");
    if(dir==0) { g_phase="IDLE"; return; }   // no 2/3 consensus → stand down
+
+   // ---- self-learning guards (loss streak / anti-revenge cooldown) ----
+   if(LossHalt())
+   {
+      g_lastSageNote = StringFormat("HALT - %d losses in a row (learning: stop for the day)", g_consecLosses);
+      SetDecision(StringFormat("{\"verdict\":\"VETO\",\"note\":\"learning halt - %d losses in a row\"}", g_consecLosses));
+      g_phase="IDLE"; return;
+   }
+   if(CooldownActive())
+   {
+      int mins = (int)MathCeil((LossCooldownMin*60-(TimeCurrent()-g_lastLossTime))/60.0);
+      g_lastSageNote = StringFormat("COOLDOWN - %d min after a loss (anti-revenge)", mins);
+      SetDecision(StringFormat("{\"verdict\":\"VETO\",\"note\":\"cooldown %d min after a loss\"}", mins));
+      g_phase="IDLE"; return;
+   }
 
    // ---- SAGE: independent risk check + VETO ----
    g_phase = "RISK";
@@ -283,10 +325,30 @@ bool IronRules(double price,double sl)
    return true;
 }
 
-// position size from risk %, clamped to MaxLot and broker step
+// ── Self-learning from losses ───────────────────────────────────────────────
+// The bot remembers recent losing closes and protects itself: shrink risk as
+// losses stack, sit out a cooldown right after a loss (anti-revenge), and stop
+// for the day once it loses MaxConsecLosses in a row. Resets on a win.
+double LossRiskFactor()
+{
+   if(!UseLossAdaptive) return 1.0;
+   if(g_consecLosses>=4) return 0.4;   // 4 in a row → quarter size
+   if(g_consecLosses>=3) return 0.6;
+   if(g_consecLosses>=2) return 0.8;
+   return 1.0;
+}
+bool CooldownActive()
+{
+   if(!UseLossAdaptive || LossCooldownMin<=0 || g_lastLossTime==0) return false;
+   return (TimeCurrent()-g_lastLossTime) < LossCooldownMin*60;
+}
+bool LossHalt() { return (UseLossAdaptive && MaxConsecLosses>0 && g_consecLosses>=MaxConsecLosses); }
+
+// position size from risk %, clamped to MaxLot and broker step. Risk is scaled
+// down by the loss-streak factor so the bot bets smaller after losses.
 double LotForRisk(double entry,double sl)
 {
-   double riskMoney = AccountInfoDouble(ACCOUNT_EQUITY) * RiskPercent/100.0;
+   double riskMoney = AccountInfoDouble(ACCOUNT_EQUITY) * RiskPercent/100.0 * LossRiskFactor();
    double slPts     = MathAbs(entry-sl)/_Point;
    double tickVal   = SymbolInfoDouble(SYM,SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(SYM,SYMBOL_TRADE_TICK_SIZE);
@@ -385,11 +447,14 @@ void PushStatus()
       "\"price\":%.2f,\"equity\":%.2f,\"position\":%s,"
       "\"daily\":{\"trades\":%d,\"win\":%d,\"loss\":%d,\"winrate\":%d,\"pnl\":%.1f},"
       "\"weekly\":{\"trades\":%d,\"win\":%d,\"loss\":%d,\"winrate\":%d,\"pnl\":%.1f},"
+      "\"learn\":{\"consec\":%d,\"riskPct\":%.2f,\"cooldown\":%s,\"halt\":%s},"
       "%s,"
       "\"prices\":{\"XAU/USD\":{\"bid\":%.2f,\"ask\":%.2f,\"spread\":%.0f}},"
       "\"ts\":%d}",
       BridgeSecret, EA_VERSION, mode, g_phase, bid, AccountInfoDouble(ACCOUNT_EQUITY), posJson,
-      dTr,dW,dL,dWR,dP, wTr,wW,wL,wWR,wP, g_decJson, bid, ask, spread, (int)TimeGMT());
+      dTr,dW,dL,dWR,dP, wTr,wW,wL,wWR,wP,
+      g_consecLosses, RiskPercent*LossRiskFactor(), (CooldownActive()?"true":"false"), (LossHalt()?"true":"false"),
+      g_decJson, bid, ask, spread, (int)TimeGMT());
    HttpPost(body);
 }
 
@@ -500,7 +565,7 @@ double ParseTP1(string comment)
 }
 // day PnL helpers (for IRON's daily-loss cap + status)
 void ResetDayAnchor(){ g_dayStartEq=AccountInfoDouble(ACCOUNT_EQUITY); g_dayStamp=DayStamp(); }
-void RollDayAnchor(){ if(DayStamp()!=g_dayStamp) { ResetDayAnchor(); g_paused=false; } }
+void RollDayAnchor(){ if(DayStamp()!=g_dayStamp) { ResetDayAnchor(); g_paused=false; g_consecLosses=0; } }
 datetime DayStamp(){ MqlDateTime d; TimeToStruct(TimeCurrent(),d); d.hour=0; d.min=0; d.sec=0; return StructToTime(d); }
 double DayPnLMoney(){ return AccountInfoDouble(ACCOUNT_EQUITY)-g_dayStartEq; }
 double DailyLossPct(){ if(g_dayStartEq<=0) return 0; return DayPnLMoney()/g_dayStartEq*100.0; }
@@ -541,6 +606,7 @@ void UpdateDashboard()
 {
    string s = "🥇 AURUM — XAU AI Desk  v"+EA_VERSION+"  (magic "+ (string)MagicNumber +")\n";
    s += "─────────────────────────────\n";
+   s += "Symbol: " + SYM + "\n";
    s += "Phase : " + g_phase + (g_paused?"   [PAUSED]":"") + "\n";
    s += "Price : " + DoubleToString(SymbolInfoDouble(SYM,SYMBOL_BID),2)
       + "   Spread " + (string)SymbolInfoInteger(SYM,SYMBOL_SPREAD) + "\n";
@@ -551,6 +617,10 @@ void UpdateDashboard()
    s += "─────────────────────────────\n";
    s += "Rules: R:R≥"+DoubleToString(MinRR,1)+"  spread≤"+(string)MaxSpreadPts
       + "  lot≤"+DoubleToString(MaxLot,2)+"  dayloss≤"+DoubleToString(MaxDailyLossPct,1)+"%\n";
+   if(UseLossAdaptive)
+      s += "Learn: losses "+(string)g_consecLosses+"/"+(string)MaxConsecLosses
+         + " · risk×"+DoubleToString(LossRiskFactor(),2)
+         + (LossHalt()?" · HALT":(CooldownActive()?" · COOLDOWN":""))+"\n";
    if(StringLen(g_lastVotedBy)>0)  s += "Votes: "+g_lastVotedBy+"\n";
    if(StringLen(g_lastSageNote)>0) s += "SAGE : "+g_lastSageNote+"\n";
    if(HasPosition())
@@ -588,6 +658,13 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
    long   dtype  = HistoryDealGetInteger(dealTicket,DEAL_TYPE);
    string side   = (dtype==DEAL_TYPE_SELL)?"BUY":"SELL";   // closing deal is opposite the entry
    string outcome= (profit>=0)?"win":"loss";
+
+   // self-learning: track the losing streak (a win resets it, a loss extends it
+   // and starts the anti-revenge cooldown)
+   if(profit < 0)      { g_consecLosses++; g_lastLossTime = TimeCurrent();
+                         PrintFormat("AURUM learn: loss #%d in a row → risk ×%.2f", g_consecLosses, LossRiskFactor()); }
+   else if(profit > 0) { g_consecLosses = 0; }
+
    PushTrade(side, exit, profit, outcome, lot, posId);
 }
 //+------------------------------------------------------------------+

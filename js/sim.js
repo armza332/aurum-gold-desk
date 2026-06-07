@@ -206,6 +206,7 @@
     if (s.voteResult !== undefined) data.voteResult = s.voteResult;
     if (s.sage !== undefined) data.sage = s.sage || { verdict: null };
     if (s.ver) data.ver = s.ver;
+    if (s.learn) data.learn = s.learn;   // self-learning state {consec,riskPct,cooldown,halt}
     dirty = true;
   }
 
@@ -224,6 +225,9 @@
     dirty = true;
   }
   function enterLive() { blank(); }
+
+  // Merge real market sentiment (from news.js) into the market card.
+  function applyMarket(m) { if (m && typeof m === 'object') { Object.assign(data.market, m); dirty = true; } }
 
   // Map real closed trades (from bridge action=trades) → the "บทเรียน" card (losses).
   function tsLabel(ts) {
@@ -256,7 +260,7 @@
   }
 
   window.Sim = {
-    data, init, update, toggle, enterIdle, enterSignal, applyLive, enterLive, blank, applyLiveTrades,
+    data, init, update, toggle, enterIdle, enterSignal, applyLive, enterLive, blank, applyLiveTrades, applyMarket,
     isDirty: () => dirty, clearDirty: () => { dirty = false; },
     fmtClock, PHASES, monActive: () => data.phase === 'IN_POSITION' || data.phase === 'EXECUTING'
   };
