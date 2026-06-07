@@ -22,6 +22,11 @@
 #property version   "1.00"
 #property strict
 
+// Bump this on every code change so the running EA can be verified against the repo.
+// Shown on the chart dashboard and sent to the web (status.ver) — if the web shows a
+// different version than this file, the chart is still running an old compile.
+#define EA_VERSION "1.0.0"
+
 #include <Trade/Trade.mqh>
 CTrade trade;
 
@@ -98,8 +103,8 @@ int OnInit()
    }
 
    ResetDayAnchor();
-   PrintFormat("AURUM EA online · %s · magic %d · trading=%s · bridge=%s",
-               SYM, MagicNumber, (EnableTrading?"ON":"OFF"),
+   PrintFormat("AURUM EA v%s online · %s · magic %d · trading=%s · bridge=%s",
+               EA_VERSION, SYM, MagicNumber, (EnableTrading?"ON":"OFF"),
                (StringLen(BridgeURL)>0?"set":"offline"));
    return INIT_SUCCEEDED;
 }
@@ -376,14 +381,14 @@ void PushStatus()
    int wWR = (wTr>0)? (int)MathRound(100.0*wW/wTr):0;
 
    string body = StringFormat(
-      "{\"kind\":\"status\",\"secret\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
+      "{\"kind\":\"status\",\"secret\":\"%s\",\"ver\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
       "\"price\":%.2f,\"equity\":%.2f,\"position\":%s,"
       "\"daily\":{\"trades\":%d,\"win\":%d,\"loss\":%d,\"winrate\":%d,\"pnl\":%.1f},"
       "\"weekly\":{\"trades\":%d,\"win\":%d,\"loss\":%d,\"winrate\":%d,\"pnl\":%.1f},"
       "%s,"
       "\"prices\":{\"XAU/USD\":{\"bid\":%.2f,\"ask\":%.2f,\"spread\":%.0f}},"
       "\"ts\":%d}",
-      BridgeSecret, mode, g_phase, bid, AccountInfoDouble(ACCOUNT_EQUITY), posJson,
+      BridgeSecret, EA_VERSION, mode, g_phase, bid, AccountInfoDouble(ACCOUNT_EQUITY), posJson,
       dTr,dW,dL,dWR,dP, wTr,wW,wL,wWR,wP, g_decJson, bid, ask, spread, (int)TimeGMT());
    HttpPost(body);
 }
@@ -534,7 +539,7 @@ string HttpGet(string url)
 //============================ DASHBOARD ===========================
 void UpdateDashboard()
 {
-   string s = "🥇 AURUM — XAU AI Desk  (magic "+ (string)MagicNumber +")\n";
+   string s = "🥇 AURUM — XAU AI Desk  v"+EA_VERSION+"  (magic "+ (string)MagicNumber +")\n";
    s += "─────────────────────────────\n";
    s += "Phase : " + g_phase + (g_paused?"   [PAUSED]":"") + "\n";
    s += "Price : " + DoubleToString(SymbolInfoDouble(SYM,SYMBOL_BID),2)

@@ -8,6 +8,7 @@
   const data = {
     mode: 'idle',           // 'idle' | 'signal'
     phase: 'IDLE',
+    ver: null,              // EA version reported via status (production verify)
     clockMin: 21 * 60 + 58, // 21:58
     price: 2348.20,
     prevPrice: 2348.20,
@@ -141,8 +142,9 @@
 
   // ---------- per-frame ----------
   function update(dt) {
-    // In live mode the bridge owns price/phase/position — skip all demo drivers.
-    if (window.CONFIG && window.CONFIG.isLive()) return;
+    // Demo drivers run ONLY in offline demo mode. In production (demoMode:false)
+    // or when live, the bridge/EA is the only source of data.
+    if (!window.CONFIG || window.CONFIG.isLive() || !window.CONFIG.demoMode) return;
 
     // clock drifts forward slowly
     data.clockMin += dt * 0.25;
@@ -203,18 +205,25 @@
     if (Array.isArray(s.votes)) data.votes = s.votes;
     if (s.voteResult !== undefined) data.voteResult = s.voteResult;
     if (s.sage !== undefined) data.sage = s.sage || { verdict: null };
+    if (s.ver) data.ver = s.ver;
     dirty = true;
   }
 
-  // Clear demo seed when switching to live so nothing fake lingers before real
-  // data arrives. Market/news stays (EA can't fetch it) — the UI badges it "เดโม".
-  function enterLive() {
+  // Wipe ALL seed values to a neutral, no-fake-data state. Used for production
+  // (not connected yet) and when switching to live — the dashboard then shows
+  // only what the EA actually sends; everything else reads "—" / "รอ EA".
+  function blank() {
+    data.mode = 'idle'; data.phase = 'IDLE';
+    data.price = 0; data.prevPrice = 0; data.equity = 0;
+    data.position = null;
     data.votes = []; data.voteResult = null; data.sage = { verdict: null };
     data.lessons = [];
     data.daily  = { trades: 0, win: 0, loss: 0, pnl: 0, winrate: 0 };
     data.weekly = { trades: 0, win: 0, loss: 0, pnl: 0, winrate: 0 };
+    data.market = { fng: null, fngLabel: '', dxy: null, dxyChg: null, funding: null, longShort: null, news: [] };
     dirty = true;
   }
+  function enterLive() { blank(); }
 
   // Map real closed trades (from bridge action=trades) → the "บทเรียน" card (losses).
   function tsLabel(ts) {
@@ -237,12 +246,17 @@
   function init() {
     A.reset();
     enterIdle(false);
-    log('SYSTEM', 'ออนไลน์ — ทีม AI เข้าประจำที่ มอนิเตอร์ XAU/USD', 'info');
-    log('SCANNER', 'เริ่มสแกนตลาดทุก 20 วินาที', 'mute');
+    if (window.CONFIG && CONFIG.demoMode) {
+      log('SYSTEM', 'ออนไลน์ (เดโม) — ทีม AI เข้าประจำที่ มอนิเตอร์ XAU/USD', 'info');
+      log('SCANNER', 'เริ่มสแกนตลาด (จำลอง) ทุก 20 วินาที', 'mute');
+    } else {
+      blank();   // production: no fake data until the EA connects
+      log('SYSTEM', 'โหมดจริง — รอเชื่อมต่อ EA ผ่าน Bridge (กดปุ่ม "เชื่อมต่อ")', 'info');
+    }
   }
 
   window.Sim = {
-    data, init, update, toggle, enterIdle, enterSignal, applyLive, enterLive, applyLiveTrades,
+    data, init, update, toggle, enterIdle, enterSignal, applyLive, enterLive, blank, applyLiveTrades,
     isDirty: () => dirty, clearDirty: () => { dirty = false; },
     fmtClock, PHASES, monActive: () => data.phase === 'IN_POSITION' || data.phase === 'EXECUTING'
   };

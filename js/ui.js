@@ -19,15 +19,17 @@
   ];
 
   function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+  function nowHHMM() { const d = new Date(), p = n => (n < 10 ? '0' : '') + n; return p(d.getHours()) + ':' + p(d.getMinutes()); }
 
   function render() {
     // ---- status bar ----
-    $('clock').textContent = Sim.fmtClock(D.clockMin);
-    $('price').textContent = D.price.toFixed(2);
+    const demo = window.CONFIG && CONFIG.demoMode;
+    $('clock').textContent = demo ? Sim.fmtClock(D.clockMin) : nowHHMM();
+    $('price').textContent = D.price > 0 ? D.price.toFixed(2) : '—';
     const chg = D.price - D.prevPrice;
     const priceEl = $('priceWrap');
     priceEl.classList.toggle('up', chg >= 0); priceEl.classList.toggle('down', chg < 0);
-    $('priceArrow').textContent = chg >= 0 ? '▲' : '▼';
+    $('priceArrow').textContent = D.price > 0 ? (chg >= 0 ? '▲' : '▼') : '';
 
     const idlePill = D.mode === 'idle';
     const modePill = $('modePill');
@@ -128,9 +130,14 @@
 
   function renderMarket() {
     const m = D.market;
-    const demo = (window.CONFIG && CONFIG.isLive()) ? ' <span class="badge mute">เดโม — ยังไม่ดึงจริง</span>' : '';
+    // No real news source yet → show an honest placeholder instead of fake numbers.
+    if (m.fng == null) {
+      $('mktCard').innerHTML = `<div class="ctitle">ข่าว & อารมณ์ตลาด</div>
+        <div class="flatmsg"><div class="sub">ยังไม่เชื่อมแหล่งข่าว — Fear&Greed / DXY / Funding จะมาในเฟสถัดไป</div></div>`;
+      return;
+    }
     $('mktCard').innerHTML = `
-      <div class="ctitle">ข่าว & อารมณ์ตลาด${demo}</div>
+      <div class="ctitle">ข่าว & อารมณ์ตลาด</div>
       <div class="fng">
         <div class="fngtop"><span>Fear & Greed</span><b>${m.fng} • ${m.fngLabel}</b></div>
         <div class="fngbar"><div class="fngfill" style="width:${m.fng}%"></div><span class="fngdot" style="left:${m.fng}%"></span></div>

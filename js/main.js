@@ -52,6 +52,10 @@
     if (connLabel) connLabel.textContent = label;
     if (footEl) footEl.textContent = foot;
   }
+  // Production: hide the demo "simulate signal" button entirely (no fake signals).
+  const toggleWrap = document.querySelector('.controls');
+  if (!CONFIG.demoMode && toggleWrap) toggleWrap.style.display = 'none';
+
   let pollN = 0;
   function onPoll(res) {
     if (!CONFIG.isLive()) return;
@@ -62,7 +66,8 @@
     } else {
       Sim.applyLive(res);
       const age = (res.ageSec != null) ? ' • อัปเดต ' + res.ageSec + ' วิที่แล้ว' : '';
-      setConn('live', 'สด · EA ออนไลน์', 'LIVE — EA ออนไลน์' + age + ' • magic ' + CONFIG.magic);
+      const ver = res.ver ? ' • EA v' + res.ver : '';
+      setConn('live', 'สด · EA' + (res.ver ? ' v' + res.ver : ''), 'LIVE — EA ออนไลน์' + age + ver + ' • magic ' + CONFIG.magic);
       // refresh real "lessons" from closed trades every ~6th poll (cheaper than every tick)
       if (pollN++ % 6 === 0)
         Bridge.getTrades().then(r => { if (r && r.trades) Sim.applyLiveTrades(r.trades); });
@@ -70,8 +75,10 @@
   }
 
   if (CONFIG.isLive()) {
-    Sim.enterLive();           // wipe demo seed before live data lands
+    Sim.enterLive();           // wipe seed before live data lands
     setConn('waiting', 'กำลังเชื่อม…', '● กำลังเชื่อมต่อ bridge…');
+  } else if (!CONFIG.demoMode) {
+    setConn('off', 'ยังไม่เชื่อมต่อ', '○ โหมดจริง — ยังไม่เชื่อม EA · กดปุ่ม "ยังไม่เชื่อมต่อ" เพื่อวาง URL ของ Bridge');
   }
   Bridge.start(onPoll);
 

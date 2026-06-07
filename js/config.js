@@ -11,11 +11,17 @@
     magic: 992611,            // MT5 EA magic for THIS gold-only project (distinct from 992511)
 
     // ----- data source -----
-    // 'mock' = run the built-in demo simulation (sim.js), no network.
-    // 'live' = poll the Apps Script bridge for real EA status/prices/trades.
+    // PRODUCTION default: no demo, no simulated data. The dashboard shows ONLY
+    // real data pushed by the EA via the bridge; before it connects it shows
+    // empty placeholders ("รอ EA"), never fake numbers.
+    // Set demoMode:true ONLY to play the offline showcase simulation.
+    demoMode: false,
+
+    // 'mock' (not connected) vs 'live' (poll the bridge). Auto-set to 'live'
+    // when a bridgeURL is saved via the connect panel.
     dataMode: 'mock',
 
-    // Paste the Apps Script /exec URL here to go live. Empty => forced mock.
+    // Paste the Apps Script /exec URL here (or use the ⚙ connect panel) to go live.
     bridgeURL: '',
 
     pollMs: 4000,             // how often to poll the bridge in live mode
