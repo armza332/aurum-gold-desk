@@ -1,0 +1,510 @@
+//+------------------------------------------------------------------+
+//|  Aurum_EA.mq5  —  AURUM Gold Desk · Layer 3 (muscle)             |
+//|  XAU/USD only · magic 992611                                     |
+//|                                                                  |
+//|  The 7-agent team, in code:                                      |
+//|    SCANNER  — computes MA/RSI/ATR/ADX, finds a setup             |
+//|    HAWK-1/2/3 — trend / structure / fade analysts, vote 2-of-3   |
+//|    SAGE     — independent risk check, can VETO, sets SL/TP        |
+//|    IRON     — hard rules (R:R, spread, lot, daily-loss) + execute |
+//|    AURUM    — manages the open trade (ladder TP, breakeven)       |
+//|                                                                  |
+//|  Talks to the Apps Script bridge (Layer 2):                      |
+//|    POST {kind:status}  every StatusEverySec                      |
+//|    POST {kind:trade}   on each close                             |
+//|    GET  ?action=command  → pause/resume/close_all + USD news risk |
+//|                                                                  |
+//|  ⚠ MT5 → Tools → Options → Expert Advisors → Allow WebRequest,   |
+//|     add:  https://script.google.com                              |
+//|           https://script.googleusercontent.com                   |
+//+------------------------------------------------------------------+
+#property copyright "AURUM"
+#property version   "1.00"
+#property strict
+
+#include <Trade/Trade.mqh>
+CTrade trade;
+
+//============================ INPUTS ================================
+input group "── Connection ──"
+input string  BridgeURL        = "";            // Apps Script /exec URL (blank = offline, no web sync)
+input string  BridgeSecret     = "aurum-secret";// must match SECRET in bridge/Code.gs
+input int     StatusEverySec   = 10;            // how often to push status
+input int     CommandEverySec  = 15;            // how often to poll commands + news
+
+input group "── Trading ──"
+input bool    EnableTrading    = true;          // master on/off (false = analyse only, no orders)
+input long    MagicNumber      = 992611;        // this project's magic
+input double  RiskPercent      = 1.0;           // risk per trade (% of equity)
+input int     ScanSeconds      = 20;            // SCANNER cadence (seconds) — runs on new bar too
+
+input group "── IRON hard rules (mirror js/config.js) ──"
+input double  MinRR            = 1.8;            // reward:risk floor
+input int     MaxSpreadPts     = 25;            // skip if spread above (points)
+input double  MaxLot           = 0.20;          // hard lot cap
+input double  MaxDailyLossPct  = 3.0;           // stop trading once daily loss hits this
+
+input group "── Signal / exits ──"
+input int     FastMA           = 20;            // trend fast EMA
+input int     SlowMA           = 50;            // trend slow EMA
+input int     RSIPeriod        = 14;
+input int     ATRPeriod        = 14;
+input int     ADXPeriod        = 14;
+input double  MinADX           = 22.0;          // HAWK-1 needs ADX above this for a trend vote
+input double  SwingLookback    = 20;            // bars for HAWK-2 structure break
+input double  SL_ATR           = 1.5;           // stop = entry ± SL_ATR × ATR
+input double  TP1_ATR          = 1.8;           // first target (partial close + move SL to BE)
+input double  TP2_ATR          = 3.6;           // runner target
+input bool    UseNewsBlock     = true;          // stand down ±window around high-impact USD news
+
+//============================ STATE ================================
+int    hFast, hSlow, hRSI, hATR, hADX;
+datetime g_lastBar      = 0;
+datetime g_lastStatus   = 0;
+datetime g_lastCommand  = 0;
+int      g_lastCmdId    = 0;
+bool     g_paused       = false;
+bool     g_newsBlock    = false;   // set from bridge command poll
+string   g_newsCur      = "";
+double   g_dayStartEq   = 0;       // equity at start of trading day
+datetime g_dayStamp     = 0;
+string   g_phase        = "IDLE";
+// last decision (for status + trade record)
+string   g_lastVotedBy  = "";
+string   g_lastSageNote = "";
+ulong    g_halfTicket   = 0;       // ticket that already had its TP1 half banked
+
+#define SYM _Symbol
+
+//============================ INIT =================================
+int OnInit()
+{
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(20);
+
+   hFast = iMA(SYM, PERIOD_CURRENT, FastMA, 0, MODE_EMA, PRICE_CLOSE);
+   hSlow = iMA(SYM, PERIOD_CURRENT, SlowMA, 0, MODE_EMA, PRICE_CLOSE);
+   hRSI  = iRSI(SYM, PERIOD_CURRENT, RSIPeriod, PRICE_CLOSE);
+   hATR  = iATR(SYM, PERIOD_CURRENT, ATRPeriod);
+   hADX  = iADX(SYM, PERIOD_CURRENT, ADXPeriod);
+   if(hFast==INVALID_HANDLE || hSlow==INVALID_HANDLE || hRSI==INVALID_HANDLE ||
+      hATR==INVALID_HANDLE  || hADX==INVALID_HANDLE)
+   {
+      Print("AURUM: indicator handle failed"); return INIT_FAILED;
+   }
+
+   ResetDayAnchor();
+   PrintFormat("AURUM EA online · %s · magic %d · trading=%s · bridge=%s",
+               SYM, MagicNumber, (EnableTrading?"ON":"OFF"),
+               (StringLen(BridgeURL)>0?"set":"offline"));
+   return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason)
+{
+   IndicatorRelease(hFast); IndicatorRelease(hSlow); IndicatorRelease(hRSI);
+   IndicatorRelease(hATR);  IndicatorRelease(hADX);
+   Comment("");
+}
+
+//============================ TICK ================================
+void OnTick()
+{
+   ManageOpenPosition();          // every tick — react fast to TP1/SL
+   RollDayAnchor();
+
+   datetime now = TimeCurrent();
+
+   // poll bridge for commands + news (throttled)
+   if(StringLen(BridgeURL)>0 && now - g_lastCommand >= CommandEverySec)
+   { PollCommand(); g_lastCommand = now; }
+
+   // run the team pipeline once per new bar
+   bool newBar = (iTime(SYM, PERIOD_CURRENT, 0) != g_lastBar);
+   if(newBar)
+   {
+      g_lastBar = iTime(SYM, PERIOD_CURRENT, 0);
+      if(EnableTrading && !g_paused && !HasPosition())
+         RunPipeline();
+   }
+
+   UpdateDashboard();
+
+   // push status to web (throttled)
+   if(StringLen(BridgeURL)>0 && now - g_lastStatus >= StatusEverySec)
+   { PushStatus(); g_lastStatus = now; }
+}
+
+//====================== THE 7-AGENT PIPELINE ======================
+// SCANNER → HAWK×3 vote → SAGE veto → IRON rules → execute
+void RunPipeline()
+{
+   g_phase = "SCANNING";
+   double atr = Buf(hATR,1);
+   if(atr<=0) return;
+
+   // ---- gather indicator reads (closed bar = shift 1) ----
+   double fast = Buf(hFast,1),  slow = Buf(hSlow,1);
+   double rsi  = Buf(hRSI,1),   adx  = Buf(hADX,1);
+   double close= iClose(SYM,PERIOD_CURRENT,1);
+   double hi   = iHigh(SYM,PERIOD_CURRENT,iHighest(SYM,PERIOD_CURRENT,MODE_HIGH,(int)SwingLookback,2));
+   double lo   = iLow (SYM,PERIOD_CURRENT,iLowest (SYM,PERIOD_CURRENT,MODE_LOW ,(int)SwingLookback,2));
+
+   // SCANNER: is there anything worth waking the team for? (a fresh swing break)
+   bool brokeUp   = close > hi;
+   bool brokeDown = close < lo;
+   if(!brokeUp && !brokeDown) { g_phase="IDLE"; return; }
+
+   g_phase = "ANALYZING";
+   // ---- HAWK votes: +1 = BUY, -1 = SELL, 0 = abstain ----
+   int h1 = HawkTrend(fast, slow, adx);
+   int h2 = HawkStructure(brokeUp, brokeDown);
+   int h3 = HawkFade(rsi);
+
+   int buyVotes  = (h1>0)+(h2>0)+(h3>0);
+   int sellVotes = (h1<0)+(h2<0)+(h3<0);
+   int dir = 0;
+   if(buyVotes  >= 2) dir =  1;
+   if(sellVotes >= 2) dir = -1;
+   g_lastVotedBy = VotedBy(dir, h1, h2, h3);
+   if(dir==0) { g_phase="IDLE"; return; }   // no 2/3 consensus → stand down
+
+   // ---- SAGE: independent risk check + VETO ----
+   g_phase = "RISK";
+   if(UseNewsBlock && g_newsBlock)
+   { g_lastSageNote="VETO — high-impact "+g_newsCur+" news window"; g_phase="IDLE"; return; }
+
+   double price = (dir>0) ? SymbolInfoDouble(SYM,SYMBOL_ASK) : SymbolInfoDouble(SYM,SYMBOL_BID);
+   double sl    = (dir>0) ? price - SL_ATR*atr : price + SL_ATR*atr;
+   double tp1   = (dir>0) ? price + TP1_ATR*atr: price - TP1_ATR*atr;
+   double tp2   = (dir>0) ? price + TP2_ATR*atr: price - TP2_ATR*atr;
+   double rr    = MathAbs(tp2-price)/MathMax(MathAbs(price-sl),_Point);
+   if(rr < MinRR)
+   { g_lastSageNote=StringFormat("VETO — R:R %.2f < %.1f",rr,MinRR); g_phase="IDLE"; return; }
+   g_lastSageNote = StringFormat("APPROVE — R:R 1:%.1f, SL@%.2f", rr, sl);
+
+   // ---- IRON: hard rules gate ----
+   g_phase = "RULES";
+   if(!IronRules(price, sl)) { g_phase="IDLE"; return; }
+
+   // ---- execute ----
+   g_phase = "EXECUTING";
+   ExecuteTrade(dir, price, sl, tp1, tp2, atr);
+}
+
+// HAWK-1 (trend): EMA stack + ADX strength
+int HawkTrend(double fast,double slow,double adx)
+{
+   if(adx < MinADX) return 0;                 // weak/ranging → abstain
+   if(fast > slow)  return  1;
+   if(fast < slow)  return -1;
+   return 0;
+}
+// HAWK-2 (structure): which side broke
+int HawkStructure(bool up,bool down)
+{ return up ? 1 : (down ? -1 : 0); }
+// HAWK-3 (fade): counter-trend at RSI extremes (else abstain)
+int HawkFade(double rsi)
+{
+   if(rsi >= 70) return -1;                    // overbought → fade down
+   if(rsi <= 30) return  1;                    // oversold  → fade up
+   return 0;
+}
+string VotedBy(int dir,int h1,int h2,int h3)
+{
+   string s="";
+   if((dir>0&&h1>0)||(dir<0&&h1<0)) s+="HAWK-1 ";
+   if((dir>0&&h2>0)||(dir<0&&h2<0)) s+="HAWK-2 ";
+   if((dir>0&&h3>0)||(dir<0&&h3<0)) s+="HAWK-3 ";
+   StringTrimRight(s); return s;
+}
+
+// IRON: the unfeeling code gate — R:R already checked by SAGE; here spread,
+// lot cap and the daily-loss ceiling.
+bool IronRules(double price,double sl)
+{
+   double spread = (double)SymbolInfoInteger(SYM,SYMBOL_SPREAD);
+   if(spread > MaxSpreadPts)
+   { PrintFormat("IRON skip: spread %.0f > %d", spread, MaxSpreadPts); return false; }
+
+   if(DailyLossPct() <= -MaxDailyLossPct)
+   { Print("IRON skip: daily loss cap hit — pausing for the day"); g_paused=true; return false; }
+
+   double lot = LotForRisk(price, sl);
+   if(lot < SymbolInfoDouble(SYM,SYMBOL_VOLUME_MIN))
+   { Print("IRON skip: computed lot below broker minimum"); return false; }
+   return true;
+}
+
+// position size from risk %, clamped to MaxLot and broker step
+double LotForRisk(double entry,double sl)
+{
+   double riskMoney = AccountInfoDouble(ACCOUNT_EQUITY) * RiskPercent/100.0;
+   double slPts     = MathAbs(entry-sl)/_Point;
+   double tickVal   = SymbolInfoDouble(SYM,SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(SYM,SYMBOL_TRADE_TICK_SIZE);
+   if(tickVal<=0||tickSize<=0||slPts<=0) return 0;
+   double valPerPt  = tickVal*(_Point/tickSize);          // money per point per lot
+   double lot       = riskMoney/(slPts*valPerPt);
+   double step      = SymbolInfoDouble(SYM,SYMBOL_VOLUME_STEP);
+   lot = MathFloor(lot/step)*step;
+   lot = MathMin(lot, MaxLot);
+   lot = MathMin(lot, SymbolInfoDouble(SYM,SYMBOL_VOLUME_MAX));
+   return lot;
+}
+
+// Open the trade with SL and the RUNNER target (TP2). TP1 is managed in code so
+// we can partial-close and move SL to breakeven (ladder). Stash levels in comment.
+void ExecuteTrade(int dir,double price,double sl,double tp1,double tp2,double atr)
+{
+   double lot = LotForRisk(price, sl);
+   if(lot<=0) { g_phase="IDLE"; return; }
+   string cmt = StringFormat("AURUM|tp1=%.2f", tp1);   // remember TP1 for the ladder
+
+   bool ok = (dir>0) ? trade.Buy (lot, SYM, price, sl, tp2, cmt)
+                     : trade.Sell(lot, SYM, price, sl, tp2, cmt);
+   if(ok)
+   {
+      g_phase = "IN_POSITION";
+      PrintFormat("AURUM %s %.2f lot @ %.2f · SL %.2f · TP1 %.2f · TP2 %.2f · by %s",
+                  (dir>0?"BUY":"SELL"), lot, price, sl, tp1, tp2, g_lastVotedBy);
+   }
+   else { PrintFormat("AURUM order failed: %d", trade.ResultRetcode()); g_phase="IDLE"; }
+}
+
+//====================== MANAGE OPEN POSITION ======================
+// Ladder: at TP1, close half and move SL to breakeven; let the rest run to TP2.
+void ManageOpenPosition()
+{
+   if(!PositionSelectByMagic()) { g_halfTicket=0; g_phase="IDLE"; return; }
+
+   long   type  = PositionGetInteger(POSITION_TYPE);
+   double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+   double vol   = PositionGetDouble(POSITION_VOLUME);
+   double cur   = (type==POSITION_TYPE_BUY)? SymbolInfoDouble(SYM,SYMBOL_BID)
+                                           : SymbolInfoDouble(SYM,SYMBOL_ASK);
+   ulong  ticket= PositionGetInteger(POSITION_TICKET);
+   double tp1   = ParseTP1(PositionGetString(POSITION_COMMENT));
+   bool   halfDone = (g_halfTicket==ticket);
+   g_phase = "IN_POSITION";
+
+   if(tp1>0 && !halfDone)
+   {
+      bool hit = (type==POSITION_TYPE_BUY)? (cur>=tp1) : (cur<=tp1);
+      if(hit)
+      {
+         double half = NormalizeVolume(vol/2.0);
+         if(half>=SymbolInfoDouble(SYM,SYMBOL_VOLUME_MIN))
+            trade.PositionClosePartial(ticket, half);          // bank half at TP1
+         // move SL to breakeven on the remainder + remember we've laddered this ticket
+         trade.PositionModify(ticket, entry, PositionGetDouble(POSITION_TP));
+         g_halfTicket = ticket;
+         PrintFormat("AURUM TP1 hit — closed half, SL → breakeven %.2f", entry);
+      }
+   }
+}
+
+//============================ BRIDGE I/O ==========================
+// POST desk status (FLAT shape — matches Sim.applyLive / Code.gs action=status)
+void PushStatus()
+{
+   string posJson = "null";
+   if(PositionSelectByMagic())
+   {
+      long type   = PositionGetInteger(POSITION_TYPE);
+      double entry= PositionGetDouble(POSITION_PRICE_OPEN);
+      double vol  = PositionGetDouble(POSITION_VOLUME);
+      double sl   = PositionGetDouble(POSITION_SL);
+      double tp2  = PositionGetDouble(POSITION_TP);
+      double tp1  = ParseTP1(PositionGetString(POSITION_COMMENT));
+      bool   half = (g_halfTicket==(ulong)PositionGetInteger(POSITION_TICKET));
+      posJson = StringFormat(
+         "{\"side\":\"%s\",\"entry\":%.2f,\"lot\":%.2f,\"oz\":%.0f,\"sl\":%.2f,\"tp1\":%.2f,\"tp2\":%.2f,\"half\":%s}",
+         (type==POSITION_TYPE_BUY?"BUY":"SELL"), entry, vol, vol*100.0, sl, tp1, tp2, (half?"true":"false"));
+   }
+   double bid = SymbolInfoDouble(SYM,SYMBOL_BID);
+   double ask = SymbolInfoDouble(SYM,SYMBOL_ASK);
+   double spread = (double)SymbolInfoInteger(SYM,SYMBOL_SPREAD);
+   string mode = HasPosition() ? "signal" : "idle";
+
+   string body = StringFormat(
+      "{\"kind\":\"status\",\"secret\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
+      "\"price\":%.2f,\"equity\":%.2f,\"position\":%s,"
+      "\"daily\":{\"pnl\":%.1f},"
+      "\"prices\":{\"XAU/USD\":{\"bid\":%.2f,\"ask\":%.2f,\"spread\":%.0f}},"
+      "\"ts\":%d}",
+      BridgeSecret, mode, g_phase, bid, AccountInfoDouble(ACCOUNT_EQUITY),
+      posJson, DayPnLMoney(), bid, ask, spread, (int)TimeGMT());
+   HttpPost(body);
+}
+
+// POST a closed-trade record (kind:trade) — feeds the web "lessons" loop.
+void PushTrade(string side,double exit,double profit,string outcome,double lot,ulong posId)
+{
+   string body = StringFormat(
+      "{\"kind\":\"trade\",\"secret\":\"%s\",\"posId\":\"%I64u\",\"side\":\"%s\","
+      "\"exit\":%.2f,\"profit\":%.2f,\"outcome\":\"%s\","
+      "\"lot\":%.2f,\"votedBy\":\"%s\",\"sageNote\":\"%s\",\"closeTime\":%d}",
+      BridgeSecret, posId, side,
+      exit, profit, outcome, lot, g_lastVotedBy, g_lastSageNote, (int)TimeGMT());
+   HttpPost(body);
+}
+
+// GET next command + news risk; act on pause/resume/close_all.
+void PollCommand()
+{
+   string url = TrimSlash(BridgeURL) + "?action=command&since=" + IntegerToString(g_lastCmdId)
+              + "&secret=" + BridgeSecret;
+   string resp = HttpGet(url);
+   if(StringLen(resp)==0) return;
+
+   // crude JSON field reads (no JSON lib in MQL5) — robust enough for our shapes
+   g_newsBlock = (StringFind(resp,"\"block\":true")>=0);
+   g_newsCur   = JsonStr(resp,"cur");
+
+   int id = (int)JsonNum(resp,"id");
+   if(id>g_lastCmdId)
+   {
+      string cmd = JsonStr(resp,"cmd");
+      g_lastCmdId = id;
+      if(cmd=="pause")      { g_paused=true;  Print("AURUM: paused by web"); }
+      else if(cmd=="resume"){ g_paused=false; Print("AURUM: resumed by web"); }
+      else if(cmd=="close_all") CloseAllOwn();
+      // "signal" (manual web entry) intentionally not auto-traded in v1 — analyse-first
+   }
+}
+
+//============================ HELPERS =============================
+double Buf(int handle,int shift)
+{
+   double b[]; if(CopyBuffer(handle,0,shift,1,b)<=0) return 0; return b[0];
+}
+bool HasPosition() { return PositionSelectByMagic(); }
+bool PositionSelectByMagic()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if(PositionGetInteger(POSITION_MAGIC)==MagicNumber &&
+         PositionGetString(POSITION_SYMBOL)==SYM) return true;
+   }
+   return false;
+}
+void CloseAllOwn()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if(PositionGetInteger(POSITION_MAGIC)==MagicNumber &&
+         PositionGetString(POSITION_SYMBOL)==SYM) trade.PositionClose(t);
+   }
+   Print("AURUM: closed all own positions (web command)");
+}
+double NormalizeVolume(double v)
+{
+   double step=SymbolInfoDouble(SYM,SYMBOL_VOLUME_STEP);
+   return MathFloor(v/step)*step;
+}
+double ParseTP1(string comment)
+{
+   int p=StringFind(comment,"tp1=");
+   if(p<0) return 0;
+   string tail=StringSubstr(comment,p+4);
+   int bar=StringFind(tail,"|"); if(bar>=0) tail=StringSubstr(tail,0,bar);
+   return StringToDouble(tail);
+}
+// day PnL helpers (for IRON's daily-loss cap + status)
+void ResetDayAnchor(){ g_dayStartEq=AccountInfoDouble(ACCOUNT_EQUITY); g_dayStamp=DayStamp(); }
+void RollDayAnchor(){ if(DayStamp()!=g_dayStamp) { ResetDayAnchor(); g_paused=false; } }
+datetime DayStamp(){ MqlDateTime d; TimeToStruct(TimeCurrent(),d); d.hour=0; d.min=0; d.sec=0; return StructToTime(d); }
+double DayPnLMoney(){ return AccountInfoDouble(ACCOUNT_EQUITY)-g_dayStartEq; }
+double DailyLossPct(){ if(g_dayStartEq<=0) return 0; return DayPnLMoney()/g_dayStartEq*100.0; }
+
+// minimal JSON readers
+string JsonStr(string src,string key)
+{
+   int p=StringFind(src,"\""+key+"\":\""); if(p<0) return "";
+   p+=StringLen(key)+4; int e=StringFind(src,"\"",p);
+   if(e<0) return ""; return StringSubstr(src,p,e-p);
+}
+double JsonNum(string src,string key)
+{
+   int p=StringFind(src,"\""+key+"\":"); if(p<0) return 0;
+   p+=StringLen(key)+3; return StringToDouble(StringSubstr(src,p,12));
+}
+string TrimSlash(string u){ if(StringLen(u)>0 && StringGetCharacter(u,StringLen(u)-1)=='/') return StringSubstr(u,0,StringLen(u)-1); return u; }
+
+// WebRequest wrappers ----------------------------------------------------
+void HttpPost(string body)
+{
+   char post[], result[]; string rh;
+   // count = StringLen → copies exactly the body bytes, no terminating 0 (what WebRequest wants)
+   StringToCharArray(body, post, 0, StringLen(body));
+   int code = WebRequest("POST", TrimSlash(BridgeURL), "Content-Type: text/plain\r\n", 5000, post, result, rh);
+   if(code==-1) PrintFormat("AURUM WebRequest(POST) err %d — allow %s in Options", GetLastError(), BridgeURL);
+}
+string HttpGet(string url)
+{
+   char post[], result[]; string rh;
+   int code = WebRequest("GET", url, "", 5000, post, result, rh);
+   if(code==-1){ PrintFormat("AURUM WebRequest(GET) err %d — allow URL in Options", GetLastError()); return ""; }
+   return CharArrayToString(result);
+}
+
+//============================ DASHBOARD ===========================
+void UpdateDashboard()
+{
+   string s = "🥇 AURUM — XAU AI Desk  (magic "+ (string)MagicNumber +")\n";
+   s += "─────────────────────────────\n";
+   s += "Phase : " + g_phase + (g_paused?"   [PAUSED]":"") + "\n";
+   s += "Price : " + DoubleToString(SymbolInfoDouble(SYM,SYMBOL_BID),2)
+      + "   Spread " + (string)SymbolInfoInteger(SYM,SYMBOL_SPREAD) + "\n";
+   s += "Equity: " + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)
+      + "   Day P/L " + DoubleToString(DayPnLMoney(),2)
+      + " (" + DoubleToString(DailyLossPct(),2) + "%)\n";
+   if(g_newsBlock) s += "⚠ NEWS BLOCK ("+g_newsCur+") — standing down\n";
+   s += "─────────────────────────────\n";
+   s += "Rules: R:R≥"+DoubleToString(MinRR,1)+"  spread≤"+(string)MaxSpreadPts
+      + "  lot≤"+DoubleToString(MaxLot,2)+"  dayloss≤"+DoubleToString(MaxDailyLossPct,1)+"%\n";
+   if(StringLen(g_lastVotedBy)>0)  s += "Votes: "+g_lastVotedBy+"\n";
+   if(StringLen(g_lastSageNote)>0) s += "SAGE : "+g_lastSageNote+"\n";
+   if(HasPosition())
+   {
+      PositionSelectByMagic();
+      s += "Open : "+(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?"BUY":"SELL")
+         + " "+DoubleToString(PositionGetDouble(POSITION_VOLUME),2)+" lot @ "
+         + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN),2)
+         + "  P/L "+DoubleToString(PositionGetDouble(POSITION_PROFIT),2);
+   }
+   Comment(s);
+}
+
+//====================== CLOSED-TRADE → BRIDGE =====================
+// Detect our closes via OnTradeTransaction and push the record for "lessons".
+void OnTradeTransaction(const MqlTradeTransaction& trans,
+                        const MqlTradeRequest& req,
+                        const MqlTradeResult& res)
+{
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
+   if(StringLen(BridgeURL)==0) return;
+
+   ulong dealTicket = trans.deal;
+   if(!HistoryDealSelect(dealTicket)) return;
+   if(HistoryDealGetInteger(dealTicket,DEAL_MAGIC)!=MagicNumber) return;
+   if(HistoryDealGetString(dealTicket,DEAL_SYMBOL)!=SYM) return;
+   if(HistoryDealGetInteger(dealTicket,DEAL_ENTRY)!=DEAL_ENTRY_OUT) return;  // closes only
+
+   double profit = HistoryDealGetDouble(dealTicket,DEAL_PROFIT)
+                 + HistoryDealGetDouble(dealTicket,DEAL_SWAP)
+                 + HistoryDealGetDouble(dealTicket,DEAL_COMMISSION);
+   double exit   = HistoryDealGetDouble(dealTicket,DEAL_PRICE);
+   double lot    = HistoryDealGetDouble(dealTicket,DEAL_VOLUME);
+   ulong  posId  = HistoryDealGetInteger(dealTicket,DEAL_POSITION_ID);
+   long   dtype  = HistoryDealGetInteger(dealTicket,DEAL_TYPE);
+   string side   = (dtype==DEAL_TYPE_SELL)?"BUY":"SELL";   // closing deal is opposite the entry
+   string outcome= (profit>=0)?"win":"loss";
+   PushTrade(side, exit, profit, outcome, lot, posId);
+}
+//+------------------------------------------------------------------+

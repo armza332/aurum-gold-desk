@@ -32,7 +32,7 @@
                             │ WebRequest (HTTPS)
                             ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  ชั้น 3 — กล้ามเนื้อ (MT5 Expert Advisor)        ⬜ เฟสถัดไป        │
+│  ชั้น 3 — กล้ามเนื้อ (MT5 Expert Advisor)        ✅ สร้างแล้ว        │
 │  mt5/Aurum_EA.mq5 · magic 992611 · XAU/USD เท่านั้น             │
 │                                                                  │
 │  • SCANNER: คำนวณ MA/RSI/ATR/ADX เอง ทุก 20 วิ                  │
@@ -158,7 +158,8 @@ TradeXAU USD/
 
 - ✅ **ชั้น 1 (สมอง)** — เสร็จ: เดโมรันได้, โครง live พร้อม, contract นิยามแล้ว
 - ✅ **ชั้น 2 (สะพาน)** — เสร็จ: `bridge/Code.gs` + คู่มือ deploy `bridge/README.md`
-- ⬜ **ชั้น 3 (กล้ามเนื้อ)** — สร้าง `mt5/Aurum_EA.mq5` (XAU/USD, magic 992611, 7-agent logic + กฎเหล็ก)
+- ✅ **ชั้น 3 (กล้ามเนื้อ)** — เสร็จ: `mt5/Aurum_EA.mq5` (7-agent + กฎเหล็ก + ladder TP + bridge I/O) · ยังไม่คอมไพล์ตรวจบน MT5
+- 🔜 **ถัดไป:** deploy bridge จริง → ใส่ URL ในเว็บ+EA → ทดสอบ end-to-end บน Demo · เพิ่ม trailing · ดึง votes/SAGE ขึ้นการ์ดเว็บ · (ออปชัน) HAWK เป็น LLM ผ่าน bridge
 
 ## ⚠️ ข้อควรระวัง
 - เดโม/ข้อมูลตัวอย่างเท่านั้นในชั้น 1 — ยังไม่ต่อเงินจริง
