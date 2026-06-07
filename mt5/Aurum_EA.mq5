@@ -19,20 +19,20 @@
 //|           https://script.googleusercontent.com                   |
 //+------------------------------------------------------------------+
 #property copyright "AURUM"
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 // Bump this on every code change so the running EA can be verified against the repo.
 // Shown on the chart dashboard and sent to the web (status.ver) — if the web shows a
 // different version than this file, the chart is still running an old compile.
-#define EA_VERSION "1.0.0"
+#define EA_VERSION "1.1.0"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
 
 //============================ INPUTS ================================
 input group "── Connection ──"
-input string  BridgeURL        = "";            // Apps Script /exec URL (blank = offline, no web sync)
+input string  BridgeURL        = "https://script.google.com/macros/s/AKfycbyIydG2_sgAue6FkSlws3qjGKLTsDZgeIP7eHq3HsP3cv0ZiN70f0GMt-Z2_v0ubm8qnw/exec";            // Apps Script /exec URL (blank = offline, no web sync)
 input string  BridgeSecret     = "aurum-secret";// must match SECRET in bridge/Code.gs
 input int     StatusEverySec   = 10;            // how often to push status
 input int     CommandEverySec  = 15;            // how often to poll commands + news
@@ -61,6 +61,10 @@ input double  SwingLookback    = 20;            // bars for HAWK-2 structure bre
 input double  SL_ATR           = 1.5;           // stop = entry ± SL_ATR × ATR
 input double  TP1_ATR          = 1.8;           // first target (partial close + move SL to BE)
 input double  TP2_ATR          = 3.6;           // runner target
+input bool    UseTrailing      = true;          // 🪤 trail SL on the runner (lock profit, let it run)
+input double  TrailATR         = 2.0;           // trail distance behind price (× ATR)
+input double  TrailStartATR    = 1.0;           // start trailing once price is this many ATR in profit
+input bool    TrailAfterTP1Only= false;         // true = only trail the runner after TP1 (before that, fixed SL)
 input bool    UseNewsBlock     = true;          // stand down ±window around high-impact USD news
 
 input group "── Self-learning (learns from losses) ──"
@@ -408,9 +412,45 @@ void ManageOpenPosition()
          // move SL to breakeven on the remainder + remember we've laddered this ticket
          trade.PositionModify(ticket, entry, PositionGetDouble(POSITION_TP));
          g_halfTicket = ticket;
+         halfDone = true;
          PrintFormat("AURUM TP1 hit — closed half, SL → breakeven %.2f", entry);
       }
    }
+
+   TrailStop(type, entry, cur, ticket, halfDone);
+}
+
+// Full trailing stop — drags the SL behind price by TrailATR×ATR, NEVER loosening
+// it. Activates after TP1 (always) or once price is TrailStartATR in profit
+// (unless TrailAfterTP1Only). Respects the broker's minimum stop distance.
+void TrailStop(long type, double entry, double cur, ulong ticket, bool halfDone)
+{
+   if(!UseTrailing) return;
+   double atr = Buf(hATR,1);
+   if(atr<=0) return;
+
+   bool isBuy = (type==POSITION_TYPE_BUY);
+   double profitATR = (isBuy ? (cur-entry) : (entry-cur)) / atr;
+   bool active = halfDone || (!TrailAfterTP1Only && profitATR >= TrailStartATR);
+   if(!active) return;
+
+   double trailDist = TrailATR*atr;
+   double stopsMin  = (double)SymbolInfoInteger(SYM,SYMBOL_TRADE_STOPS_LEVEL)*_Point;
+   if(trailDist < stopsMin) trailDist = stopsMin;        // keep legal distance from price
+
+   double curSL = PositionGetDouble(POSITION_SL);
+   double curTP = PositionGetDouble(POSITION_TP);
+   double newSL = isBuy ? cur - trailDist : cur + trailDist;
+   double minStep = 0.1*atr;                              // ignore tiny moves (avoid modify spam)
+
+   bool better = isBuy ? (newSL > curSL + minStep) : (curSL==0 || newSL < curSL - minStep);
+   if(!better) return;
+   // never trail to the wrong side of price
+   if(isBuy && newSL >= cur) return;
+   if(!isBuy && newSL <= cur) return;
+
+   if(trade.PositionModify(ticket, NormalizeDouble(newSL,(int)SymbolInfoInteger(SYM,SYMBOL_DIGITS)), curTP))
+      PrintFormat("AURUM trail: SL → %.2f (%.1f ATR behind)", newSL, TrailATR);
 }
 
 //============================ BRIDGE I/O ==========================
@@ -626,10 +666,13 @@ void UpdateDashboard()
    if(HasPosition())
    {
       PositionSelectByMagic();
+      ulong tk = PositionGetInteger(POSITION_TICKET);
+      string trail = UseTrailing ? (g_halfTicket==tk ? " · 🪤trail(runner)" : " · 🪤trail(armed)") : "";
       s += "Open : "+(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?"BUY":"SELL")
          + " "+DoubleToString(PositionGetDouble(POSITION_VOLUME),2)+" lot @ "
          + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN),2)
-         + "  P/L "+DoubleToString(PositionGetDouble(POSITION_PROFIT),2);
+         + "  SL "+DoubleToString(PositionGetDouble(POSITION_SL),2)
+         + "  P/L "+DoubleToString(PositionGetDouble(POSITION_PROFIT),2) + trail;
    }
    Comment(s);
 }

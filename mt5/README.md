@@ -33,6 +33,14 @@ https://script.googleusercontent.com
 | `MaxDailyLossPct` | 3.0 | ขาดทุนวันถึงนี้ → หยุดเทรดทั้งวัน |
 | `MinADX` | 22 | HAWK-1 (เทรนด์) ต้องการ ADX เกินนี้ถึงโหวต |
 | `SL_ATR / TP1_ATR / TP2_ATR` | 1.5 / 1.8 / 3.6 | ระยะ SL/TP เป็นเท่าของ ATR |
+| `UseTrailing` | true | 🪤 trail SL ตามราคา (ล็อกกำไร ปล่อยวิ่ง) |
+| `TrailATR` | 2.0 | ระยะ trail ตามหลังราคา (× ATR) |
+| `TrailStartATR` | 1.0 | เริ่ม trail เมื่อกำไรถึงกี่ ATR |
+| `TrailAfterTP1Only` | false | true = trail เฉพาะ runner หลัง TP1 |
+| `TradeSymbol` | "" | ว่าง=หาทองเอง (XAUUSDm/XAUUSD/GOLD…) |
+| `UseLossAdaptive` | true | เรียนรู้จากแพ้: ลดเสี่ยง+cooldown+halt |
+| `MaxConsecLosses` | 5 | แพ้ติดเท่านี้ → หยุดทั้งวัน |
+| `LossCooldownMin` | 15 | หลังแพ้ พักกี่นาที (กันล้างแค้น) |
 | `UseNewsBlock` | true | งดเข้าไม้รอบข่าวแรง USD (รับจาก bridge) |
 
 ## ทีมตัดสินใจยังไง (ในโค้ด)
@@ -43,14 +51,14 @@ https://script.googleusercontent.com
 - ต้อง **2 ใน 3** เห็นทางเดียวกัน ไม่งั้นพับ
 - **SAGE:** เช็คข่าว + คำนวณ SL/TP จาก ATR → veto ถ้า R:R < MinRR หรือมีข่าวแรง
 - **IRON:** spread / lot cap / เพดานขาดทุนวัน → ผ่านครบค่อยยิง
-- **ladder TP:** ถึง TP1 ปิดครึ่ง + เลื่อน SL มาทุน, ที่เหลือวิ่งไป TP2
+- **ladder TP + trailing:** ถึง TP1 ปิดครึ่ง + เลื่อน SL มาทุน → จากนั้น **trail SL ตามราคา** (TrailATR×ATR) ล็อกกำไรไปเรื่อย ๆ จนชนหรือถึง TP2
 
 ## คุยกับ bridge
 - ทุก `StatusEverySec` (10 วิ): POST `{kind:status}` → เว็บเห็นราคา/เฟส/ออเดอร์/equity
 - ทุก `CommandEverySec` (15 วิ): GET `?action=command` → รับ `pause/resume/close_all` + ความเสี่ยงข่าว
 - ตอนปิดไม้: POST `{kind:trade}` → เก็บลง LIVE_TRADES/Sheet (ฟีด "บทเรียน")
 
-## ข้อจำกัด v1 (ตั้งใจให้เรียบง่าย/ปลอดภัยก่อน)
+## ข้อจำกัด (ตั้งใจให้เรียบง่าย/ปลอดภัยก่อน)
 - HAWK เป็น **rule-based** (ไม่ใช่ LLM) — LLM วิเคราะห์ทำที่ฝั่งเว็บ/bridge ทีหลังได้
 - คำสั่ง `signal` จากเว็บ **ไม่** auto-trade (วิเคราะห์ก่อน) — เปิดใช้ทีหลังได้
-- ยังไม่มี trailing stop เต็มรูป (มีแค่ breakeven ที่ TP1)
+- ข่าว/แหล่ง sentiment จริงดึงที่ฝั่งเว็บ (Fear&Greed) — DXY ยังเป็นเฟสถัดไป
