@@ -31,6 +31,24 @@
     }
   }
 
+  // Probe an arbitrary URL (used by the connect panel BEFORE saving).
+  // Returns { ok, online, ageSec, msg } or { ok:false, error }.
+  async function testURL(u) {
+    u = String(u || '').trim().replace(/\/$/, '');
+    if (!u) return { ok: false, error: 'empty url' };
+    try {
+      const r = await fetch(`${u}?action=status&t=${Date.now()}`);
+      if (!r.ok) return { ok: false, error: 'HTTP ' + r.status };
+      const j = await r.json();
+      // ok:false from the bridge ("no data yet — EA not connected") still means
+      // the bridge ITSELF is reachable — that's a successful connection test.
+      return { ok: true, reachable: true, online: !!j.online, ageSec: j.ageSec,
+               msg: j.msg || (j.online ? 'EA online' : 'bridge ok, EA not pushing yet') };
+    } catch (e) {
+      return { ok: false, error: e.message || 'fetch failed' };
+    }
+  }
+
   async function getStatus() { return getJSON('status'); }
   async function getPrices() { return getJSON('prices'); }
   async function getTrades() { return getJSON('trades'); }
@@ -67,5 +85,5 @@
   }
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-  window.Bridge = { getStatus, getPrices, getTrades, sendCommand, start, stop, isLive: live };
+  window.Bridge = { getStatus, getPrices, getTrades, sendCommand, testURL, start, stop, isLive: live };
 })();

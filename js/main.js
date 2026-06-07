@@ -44,7 +44,13 @@
   // Live status overwrites demo state; the room/agents keep animating either way.
   Bridge.start(status => Sim.applyLive(status));
   const footEl = document.getElementById('footNote');
-  if (footEl && CONFIG.isLive()) footEl.textContent = 'LIVE — เชื่อมต่อ bridge แล้ว • magic ' + CONFIG.magic;
+  const connBtn = document.getElementById('connBtn');
+  const connLabel = document.getElementById('connLabel');
+  if (CONFIG.isLive()) {
+    if (footEl) footEl.textContent = 'LIVE — เชื่อมต่อ bridge แล้ว • magic ' + CONFIG.magic;
+    if (connBtn) connBtn.classList.add('live');
+    if (connLabel) connLabel.textContent = 'เชื่อมต่อแล้ว';
+  }
 
   let last = performance.now();
   function frame() {

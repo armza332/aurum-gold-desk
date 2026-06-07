@@ -36,8 +36,32 @@
     hawkCount: 3
   };
 
+  // ----- localStorage override (set via the in-app ⚙ connect panel) -----
+  // Lets users connect a bridge without editing this file. localStorage wins
+  // over the defaults above so a saved URL survives reloads.
+  const LS_KEY = 'aurum_bridge';
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+    if (saved && saved.url) { window.CONFIG.bridgeURL = saved.url; window.CONFIG.dataMode = 'live'; }
+  } catch (_e) { /* ignore bad/blocked storage */ }
+
   // Effective mode: never go live without a URL.
   window.CONFIG.isLive = function () {
     return this.dataMode === 'live' && !!this.bridgeURL;
+  };
+
+  // Persist a bridge URL and go live (caller usually reloads to start polling).
+  window.CONFIG.save = function (url) {
+    url = String(url || '').trim();
+    if (!url) return false;
+    this.bridgeURL = url; this.dataMode = 'live';
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ url })); } catch (_e) {}
+    return true;
+  };
+
+  // Clear the saved URL and fall back to mock/demo.
+  window.CONFIG.disconnect = function () {
+    this.bridgeURL = ''; this.dataMode = 'mock';
+    try { localStorage.removeItem(LS_KEY); } catch (_e) {}
   };
 })();
