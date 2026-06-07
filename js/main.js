@@ -42,15 +42,31 @@
 
   // LAYER 2 — start polling the bridge in live mode; mock mode is a no-op.
   // Live status overwrites demo state; the room/agents keep animating either way.
-  Bridge.start(status => Sim.applyLive(status));
   const footEl = document.getElementById('footNote');
   const connBtn = document.getElementById('connBtn');
   const connLabel = document.getElementById('connLabel');
-  if (CONFIG.isLive()) {
-    if (footEl) footEl.textContent = 'LIVE — เชื่อมต่อ bridge แล้ว • magic ' + CONFIG.magic;
-    if (connBtn) connBtn.classList.add('live');
-    if (connLabel) connLabel.textContent = 'เชื่อมต่อแล้ว';
+
+  // Reflect the live connection state on every poll so it's obvious what's happening.
+  function setConn(cls, label, foot) {
+    if (connBtn) connBtn.className = 'connbtn ' + cls;
+    if (connLabel) connLabel.textContent = label;
+    if (footEl) footEl.textContent = foot;
   }
+  function onPoll(res) {
+    if (!CONFIG.isLive()) return;
+    if (res === null) {
+      setConn('err', 'ต่อไม่ได้', '✕ ต่อ bridge ไม่ได้ — ตรวจ URL / deploy access=Anyone / เน็ต');
+    } else if (res.ok === false) {
+      setConn('waiting', 'รอ EA', '● เชื่อม bridge แล้ว — รอ EA ส่งข้อมูล (เปิด EA + Allow WebRequest + ใส่ BridgeURL)');
+    } else {
+      Sim.applyLive(res);
+      const age = (res.ageSec != null) ? ' • อัปเดต ' + res.ageSec + ' วิที่แล้ว' : '';
+      setConn('live', 'สด · EA ออนไลน์', 'LIVE — EA ออนไลน์' + age + ' • magic ' + CONFIG.magic);
+    }
+  }
+
+  if (CONFIG.isLive()) setConn('waiting', 'กำลังเชื่อม…', '● กำลังเชื่อมต่อ bridge…');
+  Bridge.start(onPoll);
 
   let last = performance.now();
   function frame() {

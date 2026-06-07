@@ -72,12 +72,16 @@
   }
 
   let timer = null;
-  // Poll the bridge and feed real state into the sim/UI. Falls back silently.
-  function start(onStatus) {
+  // Poll the bridge and hand the RAW result to onPoll on EVERY tick:
+  //   status object {ok:true,...}  → connected, EA pushing
+  //   {ok:false, msg}              → bridge reachable but no EA data yet
+  //   null                         → could not reach the bridge
+  // This lets the UI show an honest connection state, not just go silent.
+  function start(onPoll) {
     if (!live()) { console.info('[bridge] mock mode — demo data, no polling'); return; }
     async function tick() {
-      const status = await getStatus();
-      if (status && typeof onStatus === 'function') onStatus(status);
+      const res = await getStatus();
+      if (typeof onPoll === 'function') onPoll(res);
     }
     tick();
     timer = setInterval(tick, C.pollMs);

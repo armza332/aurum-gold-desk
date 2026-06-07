@@ -11,6 +11,12 @@
 .connbtn:hover{ border-color:var(--gold,#e8b34a); color:var(--ink,#e9eef7); }
 .connbtn .cdot{ width:7px; height:7px; border-radius:50%; background:#5f7196; }
 .connbtn.live .cdot{ background:#5fe08a; box-shadow:0 0 8px #5fe08a; }
+.connbtn.live{ border-color:rgba(95,224,138,.4); color:#5fe08a; }
+.connbtn.waiting .cdot{ background:#ffce63; box-shadow:0 0 8px #ffce63; animation:cblink 1.1s infinite; }
+.connbtn.waiting{ border-color:rgba(255,206,99,.4); color:#ffce63; }
+.connbtn.err .cdot{ background:#ff6b6b; box-shadow:0 0 8px #ff6b6b; }
+.connbtn.err{ border-color:rgba(255,107,107,.45); color:#ff8a8a; }
+@keyframes cblink{ 0%,100%{opacity:1} 50%{opacity:.35} }
 
 /* modal */
 .cmodal{
