@@ -32,7 +32,7 @@ CTrade trade;
 
 //============================ INPUTS ================================
 input group "── Connection ──"
-input string  BridgeURL        = "https://script.google.com/macros/s/AKfycbyIydG2_sgAue6FkSlws3qjGKLTsDZgeIP7eHq3HsP3cv0ZiN70f0GMt-Z2_v0ubm8qnw/exec";            // Apps Script /exec URL (blank = offline, no web sync)
+input string  BridgeURL        = "";            // Apps Script /exec URL (blank = offline, no web sync)
 input string  BridgeSecret     = "aurum-secret";// must match SECRET in bridge/Code.gs
 input int     StatusEverySec   = 10;            // how often to push status
 input int     CommandEverySec  = 15;            // how often to poll commands + news
